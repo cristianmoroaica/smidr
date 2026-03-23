@@ -2089,6 +2089,15 @@ fn run_event_loop(
             }
         }
 
+        // Auto-submit briefing prompt after first render (tick_count > 0 ensures one frame rendered first)
+        if app.briefing_pending && tick_count > 0 {
+            app.briefing_pending = false;
+            app.focus = Focus::Input;
+            let synthetic = "Please review the attached conversation and begin extracting spec fields.".to_string();
+            app.submit_prompt(synthetic);
+            app.dirty = true;
+        }
+
         // Render only when dirty
         if app.dirty {
             terminal.draw(|f| app.render(f))?;
