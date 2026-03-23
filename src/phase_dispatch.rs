@@ -19,14 +19,40 @@ impl<'a> App<'a> {
     pub(crate) fn send_spec_prompt(&mut self, text: &str, images: Vec<PathBuf>) {
         let ref_context = self.build_ref_context();
 
+        // Build briefing context if available
+        let briefing_context = self.session.phase_session.as_ref()
+            .and_then(|ps| ps.briefing.as_ref())
+            .and_then(|rel_path| {
+                let dir = self.session.active_dir.as_ref()?;
+                let path = dir.join(rel_path);
+                std::fs::read_to_string(&path).ok()
+            })
+            .map(|content| {
+                format!(
+                    "## Prior Conversation (Briefing)\n\n\
+                     The user has provided a prior conversation that describes what they want to build.\n\
+                     Use this to pre-fill spec fields where the information is clear.\n\
+                     Ask about gaps or ambiguities — do not assume.\n\n\
+                     <briefing>\n{}\n</briefing>",
+                    content
+                )
+            });
+
         let prompt = if self.claude.session_id.is_some() {
+            // Continuing session — only add ref context (briefing already sent on first message)
             if let Some(ref ctx) = ref_context {
                 format!("[Reference context]\n{}\n\n{}", ctx, text)
             } else {
                 text.to_string()
             }
         } else {
-            text.to_string()
+            // First message — include briefing if available, but NOT ref_context
+            // (ref_context on first message is handled separately by send_phase_prompt)
+            if let Some(ref bc) = briefing_context {
+                format!("{}\n\n{}", bc, text)
+            } else {
+                text.to_string()
+            }
         };
 
         let session_dir = self.session.active_dir.clone();
