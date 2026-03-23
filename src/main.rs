@@ -575,7 +575,7 @@ impl<'a> App<'a> {
         // Create PhaseSession if we have a session dir but no phase session yet
         if self.session.phase_session.is_none() {
             if let Some(dir) = self.session.active_dir.clone() {
-                self.session.create(dir, self.build_timeout, self.python_path.clone());
+                self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
                 self.refresh_projects();
             }
         }
@@ -1340,7 +1340,7 @@ impl<'a> App<'a> {
         // Ensure PhaseSession exists
         if self.session.phase_session.is_none() {
             if let Some(dir) = self.session.active_dir.clone() {
-                self.session.create(dir, self.build_timeout, self.python_path.clone());
+                self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
             }
         }
 

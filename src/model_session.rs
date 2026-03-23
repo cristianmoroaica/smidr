@@ -24,11 +24,12 @@ pub struct PhaseSession {
     pub claude_sessions: ClaudeSessionMap,
     pub build_timeout: Duration,
     pub python_path: String,
+    pub briefing: Option<String>,  // relative path to briefing.md
 }
 
 impl PhaseSession {
     /// Create a new phase session, setting up base_dir, components/, and assembly/ directories.
-    pub fn new(base_dir: PathBuf, build_timeout: u64, python_path: String) -> Self {
+    pub fn new(base_dir: PathBuf, build_timeout: u64, python_path: String, briefing_content: Option<&str>) -> Self {
         // Ensure base directory and subdirs exist
         fs::create_dir_all(&base_dir)
             .expect("Failed to create session directory");
@@ -36,6 +37,14 @@ impl PhaseSession {
             .expect("Failed to create components directory");
         fs::create_dir_all(base_dir.join("assembly"))
             .expect("Failed to create assembly directory");
+
+        let briefing = if let Some(content) = briefing_content {
+            let path = base_dir.join("briefing.md");
+            fs::write(&path, content).expect("Failed to write briefing.md");
+            Some("briefing.md".to_string())
+        } else {
+            None
+        };
 
         PhaseSession {
             base_dir,
@@ -47,6 +56,7 @@ impl PhaseSession {
             claude_sessions: ClaudeSessionMap::default(),
             build_timeout: Duration::from_secs(build_timeout),
             python_path,
+            briefing,
         }
     }
 
@@ -118,7 +128,7 @@ impl PhaseSession {
             claude_sessions: self.claude_sessions.clone(),
             conversations: self.conversations.clone(),
             component_states: self.components.clone(),
-            briefing: None,
+            briefing: self.briefing.clone(),
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -171,6 +181,7 @@ impl PhaseSession {
             claude_sessions: data.claude_sessions,
             build_timeout: Duration::from_secs(build_timeout),
             python_path,
+            briefing: data.briefing,
         })
     }
 }
@@ -190,6 +201,7 @@ mod tests {
             tmp.path().join("my_session"),
             60,
             "python".to_string(),
+            None,
         );
         assert!(tmp.path().join("my_session/components").is_dir());
         assert!(tmp.path().join("my_session/assembly").is_dir());
@@ -202,6 +214,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         session.init_components(&[("body", "Case Body"), ("cavity", "Cavity")]).unwrap();
         assert!(tmp.path().join("sess/components/body").is_dir());
@@ -218,6 +231,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         assert_eq!(
             session.component_dir("body"),
@@ -232,6 +246,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         assert_eq!(
             session.assembly_dir(),
@@ -246,6 +261,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         // Create a dummy STL
         let src = tmp.path().join("test.stl");
@@ -262,6 +278,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         let src = tmp.path().join("test.step");
         std::fs::write(&src, b"dummy step").unwrap();
@@ -277,6 +294,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         session.phase = Phase::Build;
         session.init_components(&[("body", "Body")]).unwrap();
@@ -301,6 +319,7 @@ mod tests {
             tmp.path().join("sess"),
             60,
             "python".to_string(),
+            None,
         );
         session.spec = Some(ModelSpec {
             model: crate::spec::Model {

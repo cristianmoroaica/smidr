@@ -97,8 +97,8 @@ impl SessionManager {
     }
 
     /// Create a new PhaseSession at the given directory.
-    pub fn create(&mut self, dir: PathBuf, build_timeout: u64, python_path: String) {
-        self.phase_session = Some(PhaseSession::new(dir.clone(), build_timeout, python_path));
+    pub fn create(&mut self, dir: PathBuf, build_timeout: u64, python_path: String, briefing: Option<&str>) {
+        self.phase_session = Some(PhaseSession::new(dir.clone(), build_timeout, python_path, briefing));
         self.active_dir = Some(dir);
     }
 
