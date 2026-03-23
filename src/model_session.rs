@@ -118,6 +118,7 @@ impl PhaseSession {
             claude_sessions: self.claude_sessions.clone(),
             conversations: self.conversations.clone(),
             component_states: self.components.clone(),
+            briefing: None,
         };
 
         let json = serde_json::to_string_pretty(&data)

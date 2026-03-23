@@ -25,6 +25,8 @@ pub struct PhaseSessionData {
     pub claude_sessions: ClaudeSessionMap,
     pub conversations: HashMap<String, Vec<ConversationEntry>>,
     pub component_states: Vec<ComponentState>,
+    #[serde(default)]
+    pub briefing: Option<String>,
 }
 
 /// A single conversation message
@@ -135,10 +137,27 @@ mod tests {
             claude_sessions: ClaudeSessionMap::default(),
             conversations: std::collections::HashMap::new(),
             component_states: vec![],
+            briefing: Some("briefing.md".into()),
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         assert!(json.contains("\"phase\""));
         assert!(json.contains("Spec"));
+        assert!(json.contains("\"briefing\""));
+    }
+
+    #[test]
+    fn test_deserialize_session_without_briefing() {
+        let json = r#"{
+            "name": "test",
+            "created": "2026-03-16T12:00:00Z",
+            "phase": "Spec",
+            "current_component": null,
+            "claude_sessions": {},
+            "conversations": {},
+            "component_states": []
+        }"#;
+        let data: PhaseSessionData = serde_json::from_str(json).unwrap();
+        assert!(data.briefing.is_none());
     }
 
     #[test]
