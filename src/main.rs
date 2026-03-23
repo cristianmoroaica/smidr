@@ -103,6 +103,7 @@ struct App<'a> {
     build_timeout: u64,
     /// Claude API usage monitor (5h / 7d limits)
     usage_monitor: usage::UsageMonitor,
+    briefing_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +119,7 @@ struct PendingReference {
 }
 
 impl<'a> App<'a> {
-    fn new(config: Config) -> Result<Self, String> {
+    fn new(config: Config, briefing: Option<String>) -> Result<Self, String> {
         // Load system prompt
         let system_prompt_path = find_system_prompt()?;
         let claude_system_prompt = std::fs::read_to_string(&system_prompt_path)
@@ -126,18 +127,45 @@ impl<'a> App<'a> {
 
         let python_path = config.python_path();
         let build_timeout = config.defaults.build_timeout;
-        let session = SessionManager::new(build_timeout, python_path.clone());
+        let mut session = SessionManager::new(build_timeout, python_path.clone());
 
         // Ensure ~/MiModel/ exists and scan for projects
         let _ = storage::project::ensure_root();
         seed_references();
-        let projects = storage::project::list_projects().unwrap_or_default();
+        let mut projects = storage::project::list_projects().unwrap_or_default();
 
         let mut project_tree = ProjectTreePane::new();
         project_tree.refresh(&projects);
 
         let mut viewer = Viewer::new(&config.viewer.command);
         viewer.set_working_dir(session.temp_dir());
+
+        if let Some(ref content) = briefing {
+            let name = briefing_name(content);
+
+            // Create project, dedup name if exists
+            let mut project_name = name.clone();
+            let root = storage::project::root_dir();
+            let mut suffix = 2;
+            while root.join(&project_name).exists() {
+                project_name = format!("{}_{}", name, suffix);
+                suffix += 1;
+            }
+
+            let project_path = storage::project::create_project(&project_name, "")
+                .map_err(|e| format!("Failed to create briefing project: {e}"))?;
+
+            let session_dir = project_path.join(&project_name);
+            session.create(session_dir.clone(), build_timeout, python_path.clone(), Some(content));
+            session.active_name = Some(project_name.clone());
+            session.active_dir = Some(session_dir.clone());
+
+            viewer.set_working_dir(&session_dir);
+
+            // Re-scan projects so the tree includes the new one
+            projects = storage::project::list_projects().unwrap_or_default();
+            project_tree.refresh(&projects);
+        }
 
         Ok(App {
             focus: Focus::ProjectTree,
@@ -177,6 +205,7 @@ impl<'a> App<'a> {
                 m.maybe_refresh(); // fetch once at startup
                 m
             },
+            briefing_pending: briefing.is_some(),
         })
     }
 
@@ -1884,6 +1913,7 @@ fn make_fallback_app<'a>(config: Config, warn: &str) -> App<'a> {
         ref_confirm_pending: None,
         build_timeout: 60,
         usage_monitor: usage::UsageMonitor::new(),
+        briefing_pending: false,
     }
 }
 
@@ -1907,6 +1937,30 @@ fn seed_references() {
     }
 }
 
+/// Extract a session/project name from briefing content.
+fn briefing_name(content: &str) -> String {
+    let line = content.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            for prefix in &["User:", "Human:", "Assistant:", "AI:"] {
+                if let Some(rest) = l.strip_prefix(prefix) {
+                    return rest.trim();
+                }
+            }
+            l
+        })
+        .find(|l| !l.is_empty())
+        .unwrap_or("briefing");
+
+    let name: String = line.chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .take(30)
+        .collect();
+    let name = name.trim().replace(' ', "_");
+    if name.is_empty() { "briefing".to_string() } else { name }
+}
+
 fn main() {
     let config = Config::load();
 
@@ -1915,7 +1969,28 @@ fn main() {
         eprintln!("Startup warning: {e}");
     }
 
-    let mut app = match App::new(config.clone()) {
+    // Read piped stdin before TUI takes over
+    use std::io::{IsTerminal, Read};
+    let briefing: Option<String> = if !std::io::stdin().is_terminal() {
+        let mut buf = Vec::new();
+        let max_bytes: usize = 100 * 1024;
+        std::io::stdin().lock().take(max_bytes as u64 + 1).read_to_end(&mut buf)
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: failed to read piped input: {e}");
+                0
+            });
+        let truncated = buf.len() > max_bytes;
+        buf.truncate(max_bytes);
+        let mut s = String::from_utf8_lossy(&buf).into_owned();
+        if truncated {
+            s.push_str("\n[...truncated at 100KB]");
+        }
+        if s.trim().is_empty() { None } else { Some(s) }
+    } else {
+        None
+    };
+
+    let mut app = match App::new(config.clone(), briefing) {
         Ok(app) => app,
         Err(e) => make_fallback_app(config, &e),
     };
