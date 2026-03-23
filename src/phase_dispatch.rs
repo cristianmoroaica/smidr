@@ -19,24 +19,28 @@ impl<'a> App<'a> {
     pub(crate) fn send_spec_prompt(&mut self, text: &str, images: Vec<PathBuf>) {
         let ref_context = self.build_ref_context();
 
-        // Build briefing context if available
-        let briefing_context = self.session.phase_session.as_ref()
-            .and_then(|ps| ps.briefing.as_ref())
-            .and_then(|rel_path| {
-                let dir = self.session.active_dir.as_ref()?;
-                let path = dir.join(rel_path);
-                std::fs::read_to_string(&path).ok()
-            })
-            .map(|content| {
-                format!(
-                    "## Prior Conversation (Briefing)\n\n\
-                     The user has provided a prior conversation that describes what they want to build.\n\
-                     Use this to pre-fill spec fields where the information is clear.\n\
-                     Ask about gaps or ambiguities — do not assume.\n\n\
-                     <briefing>\n{}\n</briefing>",
-                    content
-                )
-            });
+        // Build briefing context if available (only on first message — subsequent turns skip this)
+        let briefing_context = if self.claude.session_id.is_none() {
+            self.session.phase_session.as_ref()
+                .and_then(|ps| ps.briefing.as_ref())
+                .and_then(|rel_path| {
+                    let dir = self.session.active_dir.as_ref()?;
+                    let path = dir.join(rel_path);
+                    std::fs::read_to_string(&path).ok()
+                })
+                .map(|content| {
+                    format!(
+                        "## Prior Conversation (Briefing)\n\n\
+                         The user has provided a prior conversation that describes what they want to build.\n\
+                         Use this to pre-fill spec fields where the information is clear.\n\
+                         Ask about gaps or ambiguities — do not assume.\n\n\
+                         <briefing>\n{}\n</briefing>",
+                        content
+                    )
+                })
+        } else {
+            None
+        };
 
         let prompt = if self.claude.session_id.is_some() {
             // Continuing session — only add ref context (briefing already sent on first message)

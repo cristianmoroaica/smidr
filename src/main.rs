@@ -1985,17 +1985,22 @@ fn main() {
         if truncated {
             s.push_str("\n[...truncated at 100KB]");
         }
-        // Reopen stdin from /dev/tty so crossterm/ratatui can use it
-        #[cfg(unix)]
-        unsafe {
-            let tty = libc::open(b"/dev/tty\0".as_ptr() as *const _, libc::O_RDWR);
-            if tty >= 0 {
-                libc::dup2(tty, libc::STDIN_FILENO);
-                libc::close(tty);
+        if s.trim().is_empty() {
+            None
+        } else {
+            // Reopen stdin from /dev/tty so crossterm/ratatui can initialize raw mode.
+            // SAFETY: open/dup2/close are standard POSIX calls. We only dup2 onto stdin
+            // (fd 0) which we've already consumed. The tty fd is closed immediately after.
+            #[cfg(unix)]
+            unsafe {
+                let tty = libc::open(b"/dev/tty\0".as_ptr() as *const _, libc::O_RDWR);
+                if tty >= 0 {
+                    libc::dup2(tty, libc::STDIN_FILENO);
+                    libc::close(tty);
+                }
             }
+            Some(s)
         }
-
-        if s.trim().is_empty() { None } else { Some(s) }
     } else {
         None
     };
