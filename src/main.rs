@@ -15,6 +15,7 @@ mod render;
 mod python;
 mod reference;
 mod reference_detect;
+mod server;
 mod session_manager;
 mod spec;
 mod stl;
@@ -38,6 +39,7 @@ use crate::tui::spec_panel::SpecPanel;
 use crate::tui::right_panel::RightPanel;
 use crate::viewer::Viewer;
 
+use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -45,6 +47,24 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// CLI arguments. Parsed before any TUI/stdin handling so `--web` can skip
+/// ratatui/crossterm initialisation entirely.
+#[derive(Debug, Parser)]
+#[command(name = "mimodel")]
+struct Cli {
+    /// Start the web server instead of the TUI.
+    #[arg(long)]
+    web: bool,
+
+    /// Port to bind the web server to (0 = ephemeral, OS-chosen).
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+
+    /// Don't open a browser window when starting the web server.
+    #[arg(long)]
+    no_browser: bool,
+}
 
 struct App<'a> {
     // Focus and state
@@ -457,6 +477,26 @@ fn make_fallback_app<'a>(config: Config, warn: &str) -> App<'a> {
 }
 
 fn main() {
+    let cli = Cli::parse();
+
+    if cli.web {
+        let config = Config::load();
+        use std::io::Write;
+        let no_browser = cli.no_browser;
+        let result = server::run_blocking(config, cli.port, move |addr| {
+            println!("listening on http://{addr}");
+            let _ = std::io::stdout().flush();
+            if !no_browser {
+                let _ = webbrowser::open(&format!("http://127.0.0.1:{}", addr.port()));
+            }
+        });
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let config = Config::load();
 
     // Non-fatal startup checks — warn but continue

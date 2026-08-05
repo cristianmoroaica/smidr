@@ -3,6 +3,7 @@ name = "mimodel"
 version = "0.3.0"
 edition = "2021"
 description = "Interactive 3D model generator using Claude CLI"
+build = "build.rs"
 
 [[bin]]
 name = "mimodel"
@@ -21,6 +22,18 @@ tempfile = "3"
 wait-timeout = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+axum = { version = "0.8.9", features = ["ws"] }
+tokio = { version = "1.53.1", features = ["full"] }
+futures-util = "0.3"
+rust-embed = { version = "8.12.0", features = ["debug-embed"] }
+webbrowser = "1.2.4"
+
+[features]
+embed-frontend = []
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tungstenite = "0.30.0"
+ureq = { version = "3.3.0", features = ["json"] }

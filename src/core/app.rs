@@ -43,6 +43,9 @@ struct PendingReference {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwitchDenied {
     SamePhase,
+    /// Forward switch attempted while `phase_gate` is on and the current
+    /// phase has not been approved via `approve_phase()`.
+    NotApproved,
 }
 
 /// Whether `AppCore::new_with` primes the usage monitor from the network at
@@ -119,6 +122,14 @@ pub struct AppCore {
     /// `CoreEvent` (busy-state transitions, `.open_viewer` with no STL yet).
     /// Consumed via `take_repaint_request`.
     repaint_requested: bool,
+
+    /// Server-authoritative phase-approval gate (Task 2.2). When `false`
+    /// (the TUI's setting, and the default), `try_switch_phase` treats
+    /// every phase as pre-approved so Alt+1/2/3 free phase switching keeps
+    /// working exactly as before this gate existed. The web server turns
+    /// this on via `set_phase_gate(true)`, making `advance` require an
+    /// explicit `approve_phase()` call for the current phase first.
+    pub(crate) phase_gate: bool,
 }
 
 impl AppCore {
@@ -203,7 +214,80 @@ impl AppCore {
             pending_events: Vec::new(),
             pending_stl_refresh: None,
             repaint_requested: false,
+            phase_gate: false,
         })
+    }
+
+    /// Turn the server-authoritative phase-approval gate on or off. See the
+    /// `phase_gate` field doc comment for what each setting means.
+    pub fn set_phase_gate(&mut self, on: bool) {
+        self.phase_gate = on;
+    }
+
+    /// Whether `phase` has been approved in the current session's approval
+    /// map. Always `false` when there is no active phase session (e.g. no
+    /// project/session opened yet).
+    pub fn is_phase_approved(&self, phase: Phase) -> bool {
+        self.session
+            .phase_session
+            .as_ref()
+            .map(|ps| ps.approved.get(phase.label()).copied().unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Mark the CURRENT phase approved and persist it.
+    ///
+    /// Approval is stored on the active `PhaseSession`. A project opened
+    /// via `open_project_by_id` with no sessions yet has none — mirror
+    /// `submit_prompt`'s lazy session auto-creation (same session-dir
+    /// derivation) so "approve before ever prompting" (the web client's
+    /// natural first action after connecting) has somewhere to persist to.
+    pub fn approve_phase(&mut self) {
+        if self.session.phase_session.is_none() {
+            let dir = self.session.active_dir.clone().unwrap_or_else(|| {
+                let project_path = self
+                    .session
+                    .project_idx
+                    .and_then(|idx| self.projects.get(idx))
+                    .map(|p| p.path.clone())
+                    .unwrap_or_else(|| storage::project::root_dir().join("Untitled"));
+                let session_dir = project_path.join("session");
+                self.session.active_name = Some("session".to_string());
+                self.session.active_dir = Some(session_dir.clone());
+                session_dir
+            });
+            self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
+            self.refresh_projects();
+        }
+
+        let phase = self.phase;
+        if let Some(ref mut ps) = self.session.phase_session {
+            ps.approved.insert(phase.label().to_string(), true);
+        }
+        self.session.save(phase);
+    }
+
+    /// Look up a project by its directory id (the segment returned by
+    /// `/api/projects` as `id`), open it, and — if it has any sessions —
+    /// load the last one (sessions are name-sorted; "last" is the
+    /// alphabetically-last name).
+    pub(crate) fn open_project_by_id(&mut self, id: &str) -> Result<(), String> {
+        self.refresh_projects();
+        let idx = self
+            .projects
+            .iter()
+            .position(|p| p.path.file_name().map(|n| n == id).unwrap_or(false))
+            .ok_or_else(|| "unknown project".to_string())?;
+
+        let last_session = self.projects[idx].sessions.last().map(|si| si.name.clone());
+
+        self.open_project(idx);
+
+        if let Some(session_name) = last_session {
+            self.load_session(idx, session_name);
+        }
+
+        Ok(())
     }
 
     // ---- conversation log helpers --------------------------------------
@@ -2153,6 +2237,101 @@ mod tests {
             let messages = core.messages();
             assert_eq!(messages.last().unwrap().1, "No model to save.");
             assert!(!core.save_part_pending);
+        });
+    }
+
+    // ---- Task 2.2: phase approval gate ---------------------------------
+
+    /// A `test_core` with an active phase session, so `approve_phase` /
+    /// `is_phase_approved` have somewhere to read and write.
+    fn gated_core(tmp: &TempDir) -> AppCore {
+        let mut core = test_core(None);
+        core.session.create(
+            tmp.path().join("sess"),
+            core.build_timeout,
+            core.python_path.clone(),
+            None,
+        );
+        core
+    }
+
+    #[test]
+    fn phase_gate_off_allows_forward_switch_unapproved() {
+        with_test_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut core = gated_core(&tmp);
+            assert!(!core.phase_gate);
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+            assert_eq!(core.phase(), Phase::Build);
+        });
+    }
+
+    #[test]
+    fn phase_gate_on_unapproved_forward_switch_is_denied() {
+        with_test_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut core = gated_core(&tmp);
+            core.set_phase_gate(true);
+
+            let result = core.try_switch_phase(Phase::Build);
+
+            assert_eq!(result, Err(SwitchDenied::NotApproved));
+            assert_eq!(core.phase(), Phase::Spec, "phase must not change on denial");
+        });
+    }
+
+    #[test]
+    fn phase_gate_on_approved_forward_switch_succeeds() {
+        with_test_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut core = gated_core(&tmp);
+            core.set_phase_gate(true);
+
+            core.approve_phase();
+            assert!(core.is_phase_approved(Phase::Spec));
+
+            let result = core.try_switch_phase(Phase::Build);
+            assert_eq!(result, Ok(()));
+            assert_eq!(core.phase(), Phase::Build);
+        });
+    }
+
+    #[test]
+    fn phase_gate_on_backward_switch_allowed_while_unapproved() {
+        with_test_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut core = gated_core(&tmp);
+            core.set_phase_gate(true);
+
+            // Get to Refine without the gate, then flip it on and go back.
+            core.set_phase_gate(false);
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+            assert_eq!(core.try_switch_phase(Phase::Refine), Ok(()));
+            core.set_phase_gate(true);
+
+            assert!(!core.is_phase_approved(Phase::Refine));
+            let result = core.try_switch_phase(Phase::Spec);
+            assert_eq!(result, Ok(()));
+            assert_eq!(core.phase(), Phase::Spec);
+        });
+    }
+
+    #[test]
+    fn phase_gate_approval_survives_phase_session_save_and_load() {
+        with_test_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut core = gated_core(&tmp);
+            core.approve_phase();
+
+            let dir = core.session.active_dir.clone().unwrap();
+            let build_timeout = core.build_timeout;
+            let python_path = core.python_path.clone();
+            core.session.phase_session = None;
+            core.session
+                .load(&dir, build_timeout, python_path)
+                .expect("reload should succeed");
+
+            assert!(core.is_phase_approved(Phase::Spec));
         });
     }
 }

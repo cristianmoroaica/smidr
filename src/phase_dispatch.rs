@@ -223,11 +223,23 @@ impl AppCore {
     // -- Phase navigation --
 
     /// Attempt to switch to a different phase.
-    /// For now, allows free navigation between phases.
-    /// Prerequisite validation will be added in Phase 2 (approval gate).
+    ///
+    /// Same phase is always denied. Moving to a LOWER phase index (going
+    /// back) is always allowed. Moving to a HIGHER phase index is allowed
+    /// only when the approval gate is off (`phase_gate == false`, the TUI's
+    /// setting) or the current phase has been approved
+    /// (`is_phase_approved`); otherwise it is denied with `NotApproved` and
+    /// NO state is mutated (phase unchanged, no session reset, no message,
+    /// no save).
     pub fn try_switch_phase(&mut self, target: Phase) -> Result<(), SwitchDenied> {
         if target == self.phase {
             return Err(SwitchDenied::SamePhase);
+        }
+        if target.index() > self.phase.index()
+            && self.phase_gate
+            && !self.is_phase_approved(self.phase)
+        {
+            return Err(SwitchDenied::NotApproved);
         }
         self.phase = target;
         // Force fresh Claude session so phase-specific system prompt and context

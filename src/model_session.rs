@@ -28,6 +28,11 @@ pub struct PhaseSession {
     #[allow(dead_code)]
     pub python_path: String,
     pub briefing: Option<String>,  // relative path to briefing.md
+    /// Per-phase approval state for the server-authoritative gate (Task
+    /// 2.2). Key is `Phase::label()`. Empty means every phase unapproved —
+    /// the case for a brand-new session and for old sessions loaded before
+    /// this field existed.
+    pub approved: HashMap<String, bool>,
 }
 
 impl PhaseSession {
@@ -60,6 +65,7 @@ impl PhaseSession {
             build_timeout: Duration::from_secs(build_timeout),
             python_path,
             briefing,
+            approved: HashMap::new(),
         }
     }
 
@@ -142,6 +148,7 @@ impl PhaseSession {
             conversations: self.conversations.clone(),
             component_states: self.components.clone(),
             briefing: self.briefing.clone(),
+            approved: self.approved.clone(),
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -195,6 +202,7 @@ impl PhaseSession {
             build_timeout: Duration::from_secs(build_timeout),
             python_path,
             briefing: data.briefing,
+            approved: data.approved,
         })
     }
 }
@@ -358,5 +366,27 @@ mod tests {
         ).unwrap();
         assert!(loaded.spec.is_some());
         assert_eq!(loaded.spec.unwrap().model.name, "Test Model");
+    }
+
+    #[test]
+    fn test_approved_survives_save_and_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        assert!(session.approved.is_empty());
+        session.approved.insert("Spec".to_string(), true);
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        assert_eq!(loaded.approved.get("Spec"), Some(&true));
+        assert_eq!(loaded.approved.get("Build"), None);
     }
 }
