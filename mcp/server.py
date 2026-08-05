@@ -60,7 +60,8 @@ def _export_build_iteration(session_dir, label, stl_path, dims_str):
         if not comps:
             return None
 
-        comps = glb_export.apply_placements(comps, glb_export.load_placements(session_dir))
+        placements = glb_export.load_placements(session_dir)
+        comps, sources = glb_export.build_scene_nodes(comps, placements)
 
         spec_dims = {}
         if dims_str:
@@ -75,7 +76,7 @@ def _export_build_iteration(session_dir, label, stl_path, dims_str):
                 except ValueError:
                     spec_dims = {}
 
-        return glb_export.export_iteration(session_dir, comps, spec_dims)
+        return glb_export.export_iteration(session_dir, comps, spec_dims, sources)
     except Exception:
         return None
 

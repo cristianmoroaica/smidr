@@ -38,6 +38,33 @@ cavity = cq.importers.importStep(os.path.join(session, "components/cavity/result
 result = body.cut(cavity)
 ```
 
+## CRITICAL RULE: Assembly child names must match component directories
+
+Every `assy.add(..., name="...")` name MUST be exactly the component directory name
+under `components/` — no abbreviations, no renaming, no extra words.
+
+When the same component is instantiated more than once, suffix the directory name with
+`_<n>` starting at 0: e.g. two instances of `components/column_lower` -> `column_lower_0`
+and `column_lower_1`; four instances of `components/electrode_holder` ->
+`electrode_holder_0` .. `electrode_holder_3`.
+
+A single instance may be either the bare directory name (`hood`) or `hood_0`.
+
+WRONG (abbreviated/renamed — does not match component dirs `column_lower`, `electrode_holder`):
+```python
+assy.add(column_lower, name="col_lower_0")
+assy.add(electrode_holder, name="holder_0")
+```
+
+RIGHT (exact component directory name, with an `_<n>` instance suffix):
+```python
+assy.add(column_lower, name="column_lower_0")
+assy.add(electrode_holder, name="electrode_holder_0")
+```
+
+Names that do not follow this rule are dropped from the exported viewer scene — that
+part will not appear.
+
 You have these tools available:
 - ask_clarification: Ask the user about the design
 - write_file: Write code to build directories — auto-builds STL and updates the viewer
@@ -158,6 +185,7 @@ assembly/code.py     → imports body/result.step + cavity/result.step, combines
 - Match reference component dimensions EXACTLY — do not round or approximate
 - Components are self-contained — each builds independently at the origin
 - Assembly ONLY imports STEPs — never rebuilds component geometry
+- Assembly child names are exactly the component directory name, with an `_<n>` suffix per instance (column_lower_0, column_lower_1)
 
 ## Debossed labels
 

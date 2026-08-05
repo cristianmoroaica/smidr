@@ -47,7 +47,7 @@
   const GHOST_OPACITY = 0.25;
 
   type Manifest = {
-    components: { name: string; bbox: [number[], number[]]; mesh_hash: string }[];
+    components: { name: string; bbox: [number[], number[]]; mesh_hash: string; component?: string }[];
     dimensions: Record<string, number>;
   };
 
@@ -215,8 +215,9 @@
 
   function refreshTint(name: string) {
     const meshes = meshesForName(name);
+    const sourceName = name.replace(/_\d+$/, '');
     for (const mesh of meshes) {
-      if (failedComponents.includes(name)) {
+      if (failedComponents.includes(name) || failedComponents.includes(sourceName)) {
         applyTint(mesh, FAILED_COLOR);
       } else if (selectedParts.includes(name)) {
         applyTint(mesh, SELECT_COLOR);

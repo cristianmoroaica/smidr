@@ -9,6 +9,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -45,8 +46,13 @@ def mesh_hash(mesh) -> str:
     return h.hexdigest()
 
 
-def write_manifest(components: dict, spec_dims: dict, out_path) -> None:
-    """Write manifest.json describing each component's bbox and mesh hash."""
+def write_manifest(components: dict, spec_dims: dict, out_path, sources: dict = None) -> None:
+    """Write manifest.json describing each component's bbox and mesh hash.
+
+    `sources` optionally maps a node name (a `components` key) to the source
+    component name it was instanced from (for placement-driven multi-instance
+    scenes). When absent, each entry's "component" defaults to its own name.
+    """
     comp_entries = []
     for name, mesh in components.items():
         bounds = mesh.bounds
@@ -57,6 +63,7 @@ def write_manifest(components: dict, spec_dims: dict, out_path) -> None:
                 [float(v) for v in bounds[1]],
             ],
             "mesh_hash": mesh_hash(mesh),
+            "component": sources.get(name, name) if sources else name,
         })
 
     manifest = {
@@ -79,7 +86,7 @@ def next_iteration(session_dir) -> int:
     return 1 + len(existing)
 
 
-def export_iteration(session_dir, components: dict, spec_dims: dict) -> int:
+def export_iteration(session_dir, components: dict, spec_dims: dict, sources: dict = None) -> int:
     """Export the next iteration_NNN.glb + .manifest.json into session_dir.
 
     Returns the iteration number used. Never overwrites an existing pair.
@@ -94,7 +101,7 @@ def export_iteration(session_dir, components: dict, spec_dims: dict) -> int:
 
     manifest_path = os.path.join(session_dir, f"iteration_{n:03d}.manifest.json")
     export_glb(components, glb_path)
-    write_manifest(components, spec_dims, manifest_path)
+    write_manifest(components, spec_dims, manifest_path, sources=sources)
     return n
 
 
@@ -165,3 +172,73 @@ def apply_placements(components: dict, placements: dict) -> dict:
             )
 
     return result
+
+
+_TRAILING_INSTANCE_SUFFIX = re.compile(r"_\d+$")
+
+
+def build_scene_nodes(components: dict, placements: dict) -> tuple:
+    """Build a placement-driven, instance-aware set of GLB scene nodes.
+
+    Returns `(nodes, sources)`: `nodes` maps GLB node name -> baked
+    trimesh.Trimesh; `sources` maps that same node name -> the source
+    component name (a key of `components`) it was instanced from.
+
+    When `placements` is empty/falsy, this is a byte-for-byte legacy no-op:
+    the input meshes are returned as-is (same objects, untouched) so the
+    exported GLB matches today's output exactly.
+
+    Otherwise each placement entry resolves to a component by (a) exact
+    match on lowercased name, else (b) stripping one trailing `_<digits>`
+    suffix and exact-matching again. A match duplicates the component mesh,
+    bakes in the placement's 4x4 world matrix, and adds it as a node named
+    after the placement (verbatim). An unmatched placement is skipped with a
+    stderr warning. Any component never referenced by a placement is added
+    once at identity, with the existing 'using identity' warning.
+
+    Never mutates `components` or its meshes.
+    """
+    if not placements:
+        return dict(components), {name: name for name in components}
+
+    lower_to_name = {name.lower(): name for name in components}
+
+    nodes = {}
+    sources = {}
+    referenced_components = set()
+
+    for placement_name, matrix in placements.items():
+        comp = lower_to_name.get(placement_name)
+        if comp is None:
+            stripped = _TRAILING_INSTANCE_SUFFIX.sub("", placement_name)
+            comp = lower_to_name.get(stripped)
+
+        if comp is None:
+            print(
+                f"placements.json: no component for placement {placement_name!r}; skipping node",
+                file=sys.stderr,
+            )
+            continue
+
+        if placement_name in nodes:
+            continue
+
+        mesh = components[comp].copy()
+        mesh.apply_transform(matrix)
+        nodes[placement_name] = mesh
+        sources[placement_name] = comp
+        referenced_components.add(comp)
+
+    for name, mesh in components.items():
+        if name in referenced_components:
+            continue
+        if name in nodes:
+            continue
+        print(
+            f"placements.json: no placement for component {name!r}; using identity",
+            file=sys.stderr,
+        )
+        nodes[name] = mesh.copy()
+        sources[name] = name
+
+    return nodes, sources

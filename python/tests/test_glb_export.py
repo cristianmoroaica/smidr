@@ -263,3 +263,128 @@ def test_apply_placements_orphan_placement_warns(capsys):
     captured = capsys.readouterr()
     assert "no component for placement" in captured.err
     assert "ghost" in captured.err
+
+
+# ── build_scene_nodes ──
+
+def test_build_scene_nodes_two_instances_of_one_component():
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"widget": box}
+    t0 = np.eye(4)
+    t1 = np.eye(4)
+    t1[2, 3] = 25.0
+    placements = {"widget_0": t0, "widget_1": t1}
+
+    nodes, sources = glb_export.build_scene_nodes(components, placements)
+
+    assert set(nodes.keys()) == {"widget_0", "widget_1"}
+    assert sources["widget_0"] == "widget"
+    assert sources["widget_1"] == "widget"
+
+    z0 = nodes["widget_0"].vertices[:, 2]
+    z1 = nodes["widget_1"].vertices[:, 2]
+    assert np.allclose(z1, z0 + 25.0)
+
+    # source component mesh untouched
+    assert np.allclose(components["widget"].vertices, box.vertices)
+
+
+def test_build_scene_nodes_single_instance_exact_match():
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"widget": box}
+    placements = {"widget": np.eye(4)}
+
+    nodes, sources = glb_export.build_scene_nodes(components, placements)
+
+    assert set(nodes.keys()) == {"widget"}
+    assert sources["widget"] == "widget"
+
+
+def test_build_scene_nodes_suffix_strip_match():
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"column_lower": box}
+    placements = {"column_lower_0": np.eye(4)}
+
+    nodes, sources = glb_export.build_scene_nodes(components, placements)
+
+    assert set(nodes.keys()) == {"column_lower_0"}
+    assert sources["column_lower_0"] == "column_lower"
+
+
+def test_build_scene_nodes_non_matching_suffix_strip_skipped(capsys):
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"column_lower": box}
+    placements = {"col_lower_0": np.eye(4)}
+
+    nodes, sources = glb_export.build_scene_nodes(components, placements)
+
+    # The placement node itself is skipped...
+    assert "col_lower_0" not in nodes
+    captured = capsys.readouterr()
+    assert "no component for placement" in captured.err
+    assert "col_lower_0" in captured.err
+
+    # ...but the unreferenced component still surfaces once at identity, so
+    # nothing silently disappears from the scene.
+    assert set(nodes.keys()) == {"column_lower"}
+    assert sources["column_lower"] == "column_lower"
+    assert np.allclose(nodes["column_lower"].vertices, box.vertices)
+    assert "no placement for component 'column_lower'; using identity" in captured.err
+
+
+def test_build_scene_nodes_component_absent_from_placements_appears_at_identity(capsys):
+    base = trimesh.creation.box(extents=(10, 10, 10))
+    lid = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"base": base, "lid": lid}
+    placements = {"lid": np.eye(4)}
+
+    nodes, sources = glb_export.build_scene_nodes(components, placements)
+
+    assert set(nodes.keys()) == {"base", "lid"}
+    assert sources["base"] == "base"
+    assert np.allclose(nodes["base"].vertices, base.vertices)
+
+    captured = capsys.readouterr()
+    assert "no placement for component 'base'; using identity" in captured.err
+
+
+def test_build_scene_nodes_empty_placements_returns_legacy_identity():
+    base = trimesh.creation.box(extents=(10, 10, 10))
+    lid = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"base": base, "lid": lid}
+
+    nodes, sources = glb_export.build_scene_nodes(components, {})
+
+    # same objects, no copy
+    assert nodes["base"] is base
+    assert nodes["lid"] is lid
+    assert sources == {"base": "base", "lid": "lid"}
+
+
+def test_write_manifest_with_sources_includes_component_field(tmp_path):
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"widget_0": box}
+    sources = {"widget_0": "widget"}
+    out_path = tmp_path / "manifest.json"
+    glb_export.write_manifest(components, {}, out_path, sources=sources)
+
+    with open(out_path) as f:
+        manifest = json.load(f)
+
+    comp = manifest["components"][0]
+    assert comp["name"] == "widget_0"
+    assert comp["component"] == "widget"
+
+
+def test_write_manifest_without_sources_component_equals_name(tmp_path):
+    box = trimesh.creation.box(extents=(10, 10, 10))
+    components = {"base": box}
+    out_path = tmp_path / "manifest.json"
+    glb_export.write_manifest(components, {}, out_path)
+
+    with open(out_path) as f:
+        manifest = json.load(f)
+
+    comp = manifest["components"][0]
+    assert comp["name"] == "base"
+    assert comp["component"] == "base"

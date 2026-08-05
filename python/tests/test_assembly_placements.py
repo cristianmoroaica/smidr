@@ -336,6 +336,61 @@ def test_non_assembly_build_returning_an_assembly_still_exports(tmp_path):
     assert not (session_dir / "assembly" / "placements.json").exists()
 
 
+def test_export_build_iteration_instances_multiple_nodes_per_component(tmp_path):
+    """Two placements for the SAME component ('widget_0'/'widget_1') must
+    produce two distinct named nodes in the exported GLB, each traceable to
+    its source component in the manifest — the multi-instance case the
+    one-mesh-per-component GLB previously could not represent."""
+    session_dir = tmp_path / "session"
+    widget_dir = session_dir / "components" / "widget"
+    widget_dir.mkdir(parents=True)
+
+    import trimesh
+    trimesh.creation.box(extents=(10, 10, 10)).export(str(widget_dir / "result.stl"))
+
+    assembly_dir = session_dir / "assembly"
+    assembly_dir.mkdir(parents=True)
+    matrix0 = [1.0, 0.0, 0.0, 0.0,
+               0.0, 1.0, 0.0, 0.0,
+               0.0, 0.0, 1.0, 0.0,
+               0.0, 0.0, 0.0, 1.0]
+    matrix1 = [1.0, 0.0, 0.0, 0.0,
+               0.0, 1.0, 0.0, 0.0,
+               0.0, 0.0, 1.0, 25.0,
+               0.0, 0.0, 0.0, 1.0]
+    (assembly_dir / "placements.json").write_text(
+        json.dumps({"placements": [
+            {"name": "widget_0", "matrix": matrix0},
+            {"name": "widget_1", "matrix": matrix1},
+        ]})
+    )
+
+    n = server._export_build_iteration(str(session_dir), "build", None, None)
+    assert n is not None
+
+    glb_path = session_dir / f"iteration_{n:03d}.glb"
+    manifest_path = session_dir / f"iteration_{n:03d}.manifest.json"
+    assert glb_path.exists()
+    assert manifest_path.exists()
+
+    loaded = trimesh.load(str(glb_path), file_type="glb")
+    names = set(loaded.geometry.keys()) | set(loaded.graph.nodes_geometry)
+    assert "widget_0" in names
+    assert "widget_1" in names
+
+    # Compare via geometry transforms baked into the mesh vertices instead
+    # of relying on scene-graph node transforms (bake-in export contract).
+    geom0 = loaded.geometry["widget_0"] if "widget_0" in loaded.geometry else None
+    geom1 = loaded.geometry["widget_1"] if "widget_1" in loaded.geometry else None
+    assert geom0 is not None and geom1 is not None
+    assert np.allclose(geom1.vertices[:, 2], geom0.vertices[:, 2] + 25.0)
+
+    manifest = json.loads(manifest_path.read_text())
+    entries = {c["name"]: c for c in manifest["components"]}
+    assert entries["widget_0"]["component"] == "widget"
+    assert entries["widget_1"]["component"] == "widget"
+
+
 def test_stale_placements_json_removed_when_assembly_build_no_longer_produces_one(tmp_path):
     session_dir = tmp_path / "session"
     session_dir.mkdir()
