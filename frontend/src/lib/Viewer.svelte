@@ -15,7 +15,8 @@
     onPartsOpenChange,
     onPartSelected,
     onPartDeselected,
-    onStartBuild = null
+    onStartBuild = null,
+    onExport = null
   }: {
     projectId: string;
     iterations: number[];
@@ -29,6 +30,7 @@
     onPartSelected: (name: string) => void;
     onPartDeselected: (name: string) => void;
     onStartBuild?: (() => void) | null;
+    onExport?: (() => void) | null;
   } = $props();
 
   let buildActive = $derived(busy && buildProgress.length > 0);
@@ -873,6 +875,11 @@
         Parts
       </button>
     </div>
+    {#if onExport}
+      <button type="button" class="export-btn" title="Export the current iteration as STL and STEP" onclick={onExport}>
+        Export
+      </button>
+    {/if}
     <button
       type="button"
       class="icon-btn"
@@ -1186,6 +1193,33 @@
   .segmented button:focus-visible {
     outline: 2px solid rgba(79, 143, 247, 0.5);
     outline-offset: -2px;
+  }
+
+  .export-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 1.9rem;
+    padding: 0 0.7rem;
+    font: inherit;
+    font-size: 0.85rem;
+    background: rgba(26, 29, 36, 0.9);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-sm, 6px);
+    color: var(--text-secondary, #9aa3b2);
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
+    transition: background 120ms, color 120ms;
+  }
+
+  .export-btn:hover {
+    background: rgba(36, 40, 49, 0.95);
+    color: var(--text, #e6e9ef);
+  }
+
+  .export-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring, 0 0 0 2px rgba(79, 143, 247, 0.5));
   }
 
   .icon-btn {

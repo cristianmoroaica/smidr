@@ -31,7 +31,7 @@
   let failedComponents = $state<string[]>([]);
   let pendingQuestion = $state<{ question: string; options: string[] } | null>(null);
   let buildProgress = $state<{ component: string; status: string }[]>([]);
-  let approveModalOpen = $state(false);
+  let approveModal = $state<'approve' | 'export' | null>(null);
   let partsPanelOpen = $state(false);
   let pendingPhaseSwitch = $state<{ target: string; reason: string } | null>(null);
 
@@ -216,18 +216,18 @@
 
   function onApprove() {
     if (phase.toLowerCase() === 'build') {
-      approveModalOpen = true;
+      approveModal = 'approve';
       return;
     }
     client?.send({ type: 'approve_phase' });
   }
 
   function closeApproveModal() {
-    approveModalOpen = false;
+    approveModal = null;
   }
 
   function onInspectFromModal() {
-    approveModalOpen = false;
+    approveModal = null;
     partsPanelOpen = true;
   }
 
@@ -316,6 +316,7 @@
           onStartBuild={phase.toLowerCase() === 'build' && !busy
             ? () => onSend('Build it from the approved spec.')
             : null}
+          onExport={iterations.length > 0 ? () => (approveModal = 'export') : null}
         />
         <Timeline {iterations} {viewing} onSelect={onSelectIteration} />
       </div>
@@ -337,8 +338,9 @@
         <SpecPanel {spec} {phase} {approved} {onApprove} />
       </div>
     </div>
-    {#if approveModalOpen && client}
+    {#if approveModal && client}
       <ApproveModal
+        mode={approveModal}
         {projectId}
         currentIteration={viewing ?? (iterations.length > 0 ? iterations[iterations.length - 1] : null)}
         {client}

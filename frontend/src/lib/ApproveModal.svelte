@@ -6,13 +6,15 @@
     currentIteration,
     client,
     onClose,
-    onInspect
+    onInspect,
+    mode = 'approve'
   }: {
     projectId: string;
     currentIteration: number | null;
     client: SessionClient;
     onClose: () => void;
     onInspect: () => void;
+    mode?: 'approve' | 'export';
   } = $props();
 
   let dialogEl: HTMLDivElement | undefined = $state();
@@ -129,7 +131,7 @@
     bind:this={dialogEl}
   >
     <div class="dialog-header">
-      <h2 id="approve-modal-title">Approve build</h2>
+      <h2 id="approve-modal-title">{mode === 'export' ? 'Export' : 'Approve build'}</h2>
       <button type="button" class="close-btn" aria-label="Close" onclick={onClose}>×</button>
     </div>
 
@@ -161,6 +163,7 @@
         </div>
       {/if}
 
+      {#if mode === 'approve'}
       <button type="button" class="option-card" onclick={onInspect}>
         <span class="option-title">Inspect components</span>
         <span class="option-desc">Open the Parts panel to isolate individual components.</span>
@@ -182,6 +185,7 @@
 
       {#if lockError}
         <div class="inline-error">{lockError}</div>
+      {/if}
       {/if}
     </div>
   </div>
