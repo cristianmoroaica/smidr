@@ -165,11 +165,6 @@ pub fn extract_attachment_paths(input: &str) -> (String, Vec<PathBuf>) {
     (text_parts.join(" "), attachments)
 }
 
-/// Legacy alias for backward compatibility.
-pub fn extract_image_paths(input: &str) -> (String, Vec<PathBuf>) {
-    extract_attachment_paths(input)
-}
-
 /// Expand ~ to home directory.
 pub fn expand_tilde(path: &str) -> String {
     expand_path(path)

@@ -18,16 +18,22 @@ pub struct Triangle {
 #[derive(Debug)]
 pub struct StlMesh {
     pub triangles: Vec<Triangle>,
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub min: Vec3,
+    #[allow(dead_code)]
     pub max: Vec3,
 }
 
 impl StlMesh {
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn from_file(path: &Path) -> io::Result<Self> {
         let data = std::fs::read(path)?;
         Self::from_bytes(&data)
     }
 
+    #[allow(dead_code)]
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
         if data.len() < 84 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "STL too short"));
@@ -64,6 +70,7 @@ impl StlMesh {
         Ok(StlMesh { triangles, min, max })
     }
 
+    #[allow(dead_code)]
     pub fn extents(&self) -> Vec3 {
         Vec3 { x: self.max.x - self.min.x, y: self.max.y - self.min.y, z: self.max.z - self.min.z }
     }

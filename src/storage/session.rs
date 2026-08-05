@@ -37,6 +37,8 @@ pub struct ConversationEntry {
 }
 
 /// Create a new session directory inside a project.
+// Currently unused by the TUI; domain model the upcoming web layer will need.
+#[allow(dead_code)]
 pub fn create_session(project_path: &Path, name: &str) -> Result<PathBuf, String> {
     let path = project_path.join(name);
     std::fs::create_dir_all(&path)

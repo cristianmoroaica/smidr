@@ -4,9 +4,6 @@ pub mod conversation;
 pub mod project_tree;
 pub mod model_panel;
 pub mod spec_panel;
-pub mod component_tree;
-pub mod component_list;
-pub mod param_editor;
 pub mod status_bar;
 pub mod right_panel;
 
@@ -17,18 +14,5 @@ pub enum Focus {
     ProjectTree,
     Conversation,
     RightPanel,
-}
-
-/// Results from background threads.
-pub enum BackgroundResult {
-    ClaudeResponse {
-        result: Result<String, String>,
-        session_id: Option<String>,
-    },
-    BuildComplete(crate::python::BuildResult),
-    ReferenceResearch {
-        name: String,
-        result: Result<String, String>,
-    },
 }
 

@@ -153,18 +153,22 @@ pub fn rename_project(old_name: &str, new_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // Serialize tests that mutate HOME env var to avoid race conditions.
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_util::HOME_LOCK;
 
     fn with_test_root(f: impl FnOnce()) {
-        let _guard = HOME_LOCK.lock().unwrap();
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
         f();
-        std::env::remove_var("HOME");
+        // Restore rather than unset: an unset HOME makes `dirs::home_dir()`
+        // fall back to the passwd entry, i.e. the developer's real ~/MiModel.
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

@@ -31,6 +31,8 @@ impl Phase {
         }
     }
 
+    // Currently unused by the TUI; needed by the Phase 2 server-side phase gate.
+    #[allow(dead_code)]
     pub fn from_index(i: usize) -> Option<Phase> {
         match i {
             0 => Some(Phase::Spec),
@@ -48,10 +50,14 @@ impl Phase {
         }
     }
 
+    // Currently unused by the TUI; needed by the Phase 2 server-side phase gate.
+    #[allow(dead_code)]
     pub fn can_advance_to(self, target: Phase) -> bool {
         target.index() == self.index() + 1
     }
 
+    // Currently unused by the TUI; needed by the Phase 2 server-side phase gate.
+    #[allow(dead_code)]
     pub fn can_go_back_to(self, target: Phase) -> bool {
         self.index() > 0 && target.index() + 1 == self.index()
     }

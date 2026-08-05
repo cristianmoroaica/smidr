@@ -5,6 +5,8 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::core::app::{DeleteTarget, RenameTarget};
+
 use super::*;
 
 impl<'a> App<'a> {
@@ -39,20 +41,17 @@ impl<'a> App<'a> {
                 return;
             }
             (Char('z'), KeyModifiers::CONTROL) => {
-                if self.claude.busy == BusyState::Idle {
-                    if self.session.undo() {
+                if self.core.busy() == BusyState::Idle {
+                    if self.core.undo() {
                         self.conversation.add("system", "Undone last iteration.");
                         self.model_panel.clear();
-                        if let Some(meta) = self.session.current_metadata.clone() {
+                        if let Some(meta) = self.core.model_metadata() {
                             self.model_panel.update(&meta, None, 0);
-                            let model_summary = format!(
-                                "{:.1} x {:.1} x {:.1} mm\nIterations: 0\nEngine: {}\nWatertight: {}",
-                                meta.dimensions.x, meta.dimensions.y, meta.dimensions.z,
-                                meta.engine.as_str(),
-                                if meta.watertight { "yes" } else { "no" }
-                            );
-                            self.right_panel.set_model(&model_summary);
                         }
+                        // `core.undo()` already updated `core.model_summary`;
+                        // mirror it through the normal sync path so a later
+                        // tick can't revert it back to the stale value.
+                        self.sync_from_core();
                     } else {
                         self.conversation.add("system", "Nothing to undo.");
                     }
@@ -60,18 +59,17 @@ impl<'a> App<'a> {
                 return;
             }
             (Char('c'), KeyModifiers::CONTROL) => {
-                if self.claude.busy != BusyState::Idle {
+                if self.core.busy() != BusyState::Idle {
                     // Kill background process
-                    self.claude.cancel();
+                    self.core.cancel();
                     self.conversation.add("system", "(cancelled)");
-                    self.claude.busy = BusyState::Idle;
                     self.last_ctrl_c = None;
                 } else {
                     // Double Ctrl+C to quit
                     let now = std::time::Instant::now();
                     if let Some(last) = self.last_ctrl_c {
                         if now.duration_since(last).as_millis() < 500 {
-                            self.session.save(self.phase);
+                            self.core.save_session();
                             self.cleanup();
                             self.should_quit = true;
                         } else {
@@ -87,9 +85,8 @@ impl<'a> App<'a> {
             }
             (Char('x'), KeyModifiers::CONTROL) => {
                 // Clear all pending attachments
-                if !self.pending_images.is_empty() {
-                    let count = self.pending_images.len();
-                    self.pending_images.clear();
+                let count = self.core.clear_pending_images();
+                if count > 0 {
                     self.model_panel.pending_files.clear();
                     self.conversation.add("system", &format!("Cleared {count} pending file(s)."));
                 }
@@ -97,9 +94,9 @@ impl<'a> App<'a> {
             }
             (Char('w'), KeyModifiers::CONTROL) => {
                 // Save current model as a named part
-                if self.session.latest_stl_path().is_some() {
+                if self.core.latest_stl_path().is_some() {
                     self.conversation.add("system", "Save as part: type a name and press Enter.");
-                    self.save_part_pending = true;
+                    self.core.request_save_part();
                     self.focus = Focus::Input;
                 } else {
                     self.conversation.add("system", "No model to save yet.");
@@ -108,11 +105,10 @@ impl<'a> App<'a> {
             }
             (Char('v'), KeyModifiers::CONTROL) => {
                 // Paste clipboard image
-                let img_dir = self.session.active_dir
-                    .as_ref()
+                let img_dir = self.core.session_dir()
                     .map(|d| d.join("images"))
                     .unwrap_or_else(|| {
-                        self.session.temp_dir().join("images")
+                        self.core.temp_dir().join("images")
                     });
                 let _ = std::fs::create_dir_all(&img_dir);
                 let timestamp = std::time::SystemTime::now()
@@ -125,7 +121,7 @@ impl<'a> App<'a> {
                         let size_kb = std::fs::metadata(&dest).map(|m| m.len() / 1024).unwrap_or(0);
                         self.conversation.add("system", &format!("Attached image ({size_kb}KB)"));
                         self.model_panel.pending_files.push(dest.clone());
-                        self.pending_images.push(dest);
+                        self.core.push_pending_image(dest);
                     }
                     Err(e) => {
                         self.conversation.add("system", &format!("Clipboard: {e}"));
@@ -134,22 +130,22 @@ impl<'a> App<'a> {
                 return;
             }
             (Char('n'), KeyModifiers::CONTROL) => {
-                self.new_session_pending = true;
+                self.core.request_new_session();
                 self.conversation.add("system", "Next prompt will start a new session.");
                 return;
             }
             (Char('p'), KeyModifiers::CONTROL) => {
-                self.new_project_pending = true;
+                self.core.request_new_project();
                 self.conversation.add("system", "Next prompt will create a new project.");
                 return;
             }
             (Char('s'), KeyModifiers::CONTROL) => {
                 // Export current STL
-                if self.session.latest_stl_path().is_some() {
+                if self.core.latest_stl_path().is_some() {
                     let export_dest = dirs::home_dir()
                         .unwrap_or_else(|| PathBuf::from("."))
                         .join("model_export.stl");
-                    match self.session.export(&export_dest) {
+                    match self.core.export(&export_dest) {
                         Ok(()) => {
                             self.conversation.add("system", &format!("Exported to {}", export_dest.display()));
                         }
@@ -164,28 +160,15 @@ impl<'a> App<'a> {
             }
             // Phase navigation: Alt+1 through Alt+3
             (Char('1'), KeyModifiers::ALT) => {
-                self.try_switch_phase(Phase::Spec);
+                let _ = self.switch_phase(Phase::Spec);
                 return;
             }
             (Char('2'), KeyModifiers::ALT) => {
-                self.try_switch_phase(Phase::Build);
+                let _ = self.switch_phase(Phase::Build);
                 return;
             }
             (Char('3'), KeyModifiers::ALT) => {
-                self.try_switch_phase(Phase::Refine);
-                return;
-            }
-            // Component navigation: Ctrl+Left/Right (only in Component phase)
-            (Left, KeyModifiers::CONTROL) => {
-                if self.phase == Phase::Build {
-                    self.component_list.select_prev();
-                }
-                return;
-            }
-            (Right, KeyModifiers::CONTROL) => {
-                if self.phase == Phase::Build {
-                    self.component_list.select_next();
-                }
+                let _ = self.switch_phase(Phase::Refine);
                 return;
             }
             (Tab, _) => {
@@ -221,11 +204,21 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Try to switch phase; ignore `SwitchDenied::SamePhase` silently,
+    /// matching the pre-refactor early-return behavior.
+    fn switch_phase(&mut self, target: Phase) -> Result<(), SwitchDenied> {
+        let result = self.core.try_switch_phase(target);
+        if result.is_ok() {
+            self.sync_from_core();
+        }
+        result
+    }
+
     pub(crate) fn handle_input_key(&mut self, key: crossterm::event::KeyEvent) {
         // Convert key event to tui_textarea Input and handle
         let input = tui_textarea::Input::from(key);
         if let Some(text) = self.input_bar.handle_input(input) {
-            self.submit_prompt(text);
+            self.submit(&text, &[], &[]);
         }
     }
 
@@ -245,7 +238,7 @@ impl<'a> App<'a> {
                                 let name = name.clone();
                                 if !self.project_tree.expanded_sessions.contains(&name) {
                                     self.project_tree.toggle_session_expand(&name);
-                                    let projects = self.projects.clone();
+                                    let projects = self.core.projects().to_vec();
                                     self.project_tree.refresh(&projects);
                                 }
                             }
@@ -254,7 +247,7 @@ impl<'a> App<'a> {
                             let idx = entry.project_idx;
                             if self.project_tree.active_project != Some(idx) {
                                 self.project_tree.active_project = Some(idx);
-                                let projects = self.projects.clone();
+                                let projects = self.core.projects().to_vec();
                                 self.project_tree.refresh(&projects);
                             }
                         }
@@ -272,7 +265,7 @@ impl<'a> App<'a> {
                                 let name = name.clone();
                                 if self.project_tree.expanded_sessions.contains(&name) {
                                     self.project_tree.toggle_session_expand(&name);
-                                    let projects = self.projects.clone();
+                                    let projects = self.core.projects().to_vec();
                                     self.project_tree.refresh(&projects);
                                 }
                             }
@@ -281,7 +274,7 @@ impl<'a> App<'a> {
                             let idx = entry.project_idx;
                             if self.project_tree.active_project == Some(idx) {
                                 self.project_tree.active_project = None;
-                                let projects = self.projects.clone();
+                                let projects = self.core.projects().to_vec();
                                 self.project_tree.refresh(&projects);
                             }
                         }
@@ -302,17 +295,16 @@ impl<'a> App<'a> {
                     }
                     if let Some(ref session_name) = entry.session_name {
                         self.conversation.add("system", &format!("Rename session '{session_name}': type new name and press Enter."));
-                        self.rename_pending = Some(RenameTarget::Session {
+                        self.core.request_rename(RenameTarget::Session {
                             project_idx: entry.project_idx,
                             old_name: session_name.clone(),
                         });
                     } else {
-                        let project_name = self.projects.get(entry.project_idx)
+                        let project_name = self.core.projects().get(entry.project_idx)
                             .map(|p| p.meta.name.clone())
                             .unwrap_or_default();
                         self.conversation.add("system", &format!("Rename project '{project_name}': type new name and press Enter."));
-                        self.rename_pending = Some(RenameTarget::Project {
-                            project_idx: entry.project_idx,
+                        self.core.request_rename(RenameTarget::Project {
                             old_name: project_name,
                         });
                     }
@@ -328,17 +320,16 @@ impl<'a> App<'a> {
                     }
                     if let Some(ref session_name) = entry.session_name {
                         self.conversation.add("system", &format!("Delete session '{session_name}'? Type 'yes' to confirm."));
-                        self.delete_pending = Some(DeleteTarget::Session {
+                        self.core.request_delete(DeleteTarget::Session {
                             project_idx: entry.project_idx,
                             name: session_name.clone(),
                         });
                     } else {
-                        let project_name = self.projects.get(entry.project_idx)
+                        let project_name = self.core.projects().get(entry.project_idx)
                             .map(|p| p.meta.name.clone())
                             .unwrap_or_default();
                         self.conversation.add("system", &format!("Delete project '{project_name}' and all its sessions? Type 'yes' to confirm."));
-                        self.delete_pending = Some(DeleteTarget::Project {
-                            project_idx: entry.project_idx,
+                        self.core.request_delete(DeleteTarget::Project {
                             name: project_name,
                         });
                     }
@@ -355,7 +346,7 @@ impl<'a> App<'a> {
 
                     match kind {
                         TreeEntryKind::NewProject => {
-                            self.new_project_pending = true;
+                            self.core.request_new_project();
                             self.conversation.add("system", "Type project name and press Enter.");
                             self.focus = Focus::Input;
                         }
@@ -367,7 +358,7 @@ impl<'a> App<'a> {
                             } else {
                                 None
                             };
-                            let projects = self.projects.clone();
+                            let projects = self.core.projects().to_vec();
                             self.project_tree.refresh(&projects);
                             if expanding {
                                 self.open_project(project_idx);
@@ -380,7 +371,7 @@ impl<'a> App<'a> {
                                     self.project_tree.toggle_session_expand(name);
                                 }
                                 self.load_session(project_idx, name.clone());
-                                let projects = self.projects.clone();
+                                let projects = self.core.projects().to_vec();
                                 self.project_tree.refresh(&projects);
                             }
                         }
@@ -418,7 +409,7 @@ impl<'a> App<'a> {
                                         let kind = if crate::image::is_pdf(&p) { "PDF" } else { "image" };
                                         let size_kb = std::fs::metadata(&p).map(|m| m.len() / 1024).unwrap_or(0);
                                         self.conversation.add("system", &format!("Attached {kind} ({size_kb}KB): {}", p.display()));
-                                        self.pending_images.push(p);
+                                        self.core.push_pending_image(p);
                                     }
                                     FileAction::None => {
                                         self.conversation.add("system", &format!("File type not supported for opening: {}", path.display()));
@@ -590,7 +581,7 @@ impl<'a> App<'a> {
             // Try to resolve as a file path
             let path_str = if let Some(stripped) = line.strip_prefix("file://") {
                 // Decode percent-encoded URI
-                percent_decode(stripped)
+                crate::core::app::percent_decode(stripped)
             } else {
                 line.to_string()
             };
@@ -601,7 +592,7 @@ impl<'a> App<'a> {
                 let kind = if image::is_pdf(path) { "PDF" } else { "image" };
                 let size_kb = std::fs::metadata(path).map(|m| m.len() / 1024).unwrap_or(0);
                 self.conversation.add("system", &format!("Attached {kind} ({size_kb}KB): {}", path.display()));
-                self.pending_images.push(path.to_path_buf());
+                self.core.push_pending_image(path.to_path_buf());
             } else {
                 remaining_text.push(raw_line);
             }

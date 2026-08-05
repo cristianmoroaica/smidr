@@ -22,7 +22,10 @@ pub struct PhaseSession {
     pub current_component_idx: Option<usize>,
     pub conversations: HashMap<String, Vec<ConversationEntry>>,
     pub claude_sessions: ClaudeSessionMap,
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub build_timeout: Duration,
+    #[allow(dead_code)]
     pub python_path: String,
     pub briefing: Option<String>,  // relative path to briefing.md
 }
@@ -62,6 +65,8 @@ impl PhaseSession {
 
     /// Initialize component directories and populate self.components.
     /// Each entry in `ids_and_names` is `(id, display_name)`.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn init_components(&mut self, ids_and_names: &[(&str, &str)]) -> Result<(), String> {
         self.components.clear();
 
@@ -80,16 +85,22 @@ impl PhaseSession {
     }
 
     /// Return the directory for a given component id.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn component_dir(&self, id: &str) -> PathBuf {
         self.base_dir.join("components").join(id)
     }
 
     /// Return the assembly directory.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn assembly_dir(&self) -> PathBuf {
         self.base_dir.join("assembly")
     }
 
     /// Atomic copy: write to _buffer.stl.tmp then rename to _buffer.stl.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn update_working_stl(&self, src: &Path) -> Result<(), String> {
         let tmp = self.base_dir.join("_buffer.stl.tmp");
         let dest = self.base_dir.join("_buffer.stl");
@@ -101,6 +112,8 @@ impl PhaseSession {
     }
 
     /// Atomic copy: write to _buffer.step.tmp then rename to _buffer.step.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn update_working_step(&self, src: &Path) -> Result<(), String> {
         let tmp = self.base_dir.join("_buffer.step.tmp");
         let dest = self.base_dir.join("_buffer.step");

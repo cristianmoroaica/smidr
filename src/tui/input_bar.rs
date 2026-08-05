@@ -124,37 +124,4 @@ impl<'a> InputBar<'a> {
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
     }
 
-    /// Set a prefix badge (e.g. "[2 images]").
-    pub fn set_badge(&mut self, badge: &str) {
-        let title = if badge.is_empty() {
-            " Input ".to_string()
-        } else {
-            format!(" Input · {badge} ")
-        };
-        self.textarea.set_block(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Rgb(49, 50, 68)))
-                .title(title)
-                .title_style(Style::default().fg(Color::Rgb(147, 153, 178)))
-        );
-    }
-
-    /// Set border highlight when focused.
-    pub fn set_focused(&mut self, focused: bool) {
-        let border_color = if focused {
-            Color::Rgb(137, 180, 250)
-        } else {
-            Color::Rgb(49, 50, 68)
-        };
-        self.textarea.set_block(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(Style::default().fg(border_color))
-                .title(" Input ")
-                .title_style(Style::default().fg(Color::Rgb(147, 153, 178)))
-        );
-    }
 }

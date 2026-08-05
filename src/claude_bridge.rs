@@ -1,5 +1,5 @@
 use crate::claude;
-use crate::tui::BackgroundResult;
+use crate::core::BackgroundResult;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
@@ -20,6 +20,31 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
+/// A prompt dispatch recorded instead of executed (see [`Dispatch::Capture`]).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // read by tests only
+pub struct CapturedPrompt {
+    /// Phase name for `send_phase_prompt`; `None` for `send_raw_prompt`.
+    pub phase_name: Option<String>,
+    pub prompt: String,
+    pub images: Vec<PathBuf>,
+    pub ref_context: Option<String>,
+    pub has_mcp: bool,
+}
+
+/// Where a dispatched prompt goes.
+///
+/// Production always uses `Subprocess`, which spawns the `claude` CLI on a
+/// background thread. `Capture` records the dispatch instead, so tests can
+/// drive the full prompt-submission path (including phase dispatch) without
+/// launching a subprocess or making a network call. The variant is chosen at
+/// runtime rather than by `cfg(test)` so both paths share one implementation.
+pub enum Dispatch {
+    Subprocess,
+    #[allow(dead_code)] // constructed by tests only
+    Capture(Vec<CapturedPrompt>),
+}
+
 /// Owns all Claude CLI interaction state: channels, PID tracking,
 /// model selection, session continuity, and streaming text buffer.
 pub struct ClaudeBridge {
@@ -37,6 +62,8 @@ pub struct ClaudeBridge {
     pub session_id: Option<String>,
     pub streaming_text: String,
     pub busy: BusyState,
+    /// Dispatch backend for `send_phase_prompt` / `send_raw_prompt`.
+    pub dispatch: Dispatch,
 }
 
 impl ClaudeBridge {
@@ -59,18 +86,19 @@ impl ClaudeBridge {
             session_id: None,
             streaming_text: String::new(),
             busy: BusyState::Idle,
+            dispatch: Dispatch::Subprocess,
         }
     }
 
-    /// Drain stream_rx via try_recv loop, appending to streaming_text.
-    /// Returns true if any chunks were received.
-    pub fn drain_streaming(&mut self) -> bool {
-        let mut got = false;
+    /// Drain stream_rx via try_recv loop, appending each chunk to
+    /// streaming_text and returning the chunks in arrival order.
+    pub fn drain_streaming(&mut self) -> Vec<String> {
+        let mut chunks = Vec::new();
         while let Ok(chunk) = self.stream_rx.try_recv() {
             self.streaming_text.push_str(&chunk);
-            got = true;
+            chunks.push(chunk);
         }
-        got
+        chunks
     }
 
     /// Drain tool_rx via try_recv loop, returning all pending tool calls.
@@ -127,6 +155,17 @@ impl ClaudeBridge {
         let ref_context = ref_context.map(|s| s.to_string());
         let has_mcp = mcp_config.is_some();
 
+        if let Dispatch::Capture(ref mut log) = self.dispatch {
+            log.push(CapturedPrompt {
+                phase_name: Some(phase_name.clone()),
+                prompt: prompt.clone(),
+                images: images.clone(),
+                ref_context: ref_context.clone(),
+                has_mcp,
+            });
+            return;
+        }
+
         std::thread::spawn(move || {
             let result = claude::send_with_phase_prompt(
                 &model,
@@ -179,6 +218,17 @@ impl ClaudeBridge {
         let prompt = prompt.to_string();
         let images = images.to_vec();
         let result_name = result_name.to_string();
+
+        if let Dispatch::Capture(ref mut log) = self.dispatch {
+            log.push(CapturedPrompt {
+                phase_name: None,
+                prompt: prompt.clone(),
+                images: images.clone(),
+                ref_context: None,
+                has_mcp: false,
+            });
+            return;
+        }
 
         std::thread::spawn(move || {
             let result = claude::send_prompt(

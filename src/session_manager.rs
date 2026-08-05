@@ -129,11 +129,6 @@ impl SessionManager {
         self.undo_snapshot = None;
     }
 
-    /// Returns true if a session is currently active (has a directory).
-    pub fn is_active(&self) -> bool {
-        self.active_dir.is_some()
-    }
-
     // -- Build methods (migrated from LegacySession) --
 
     pub fn temp_dir(&self) -> &Path {

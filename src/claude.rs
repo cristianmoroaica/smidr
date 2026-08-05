@@ -1,41 +1,8 @@
 //! Claude CLI client — spawns `claude` subprocess for each interaction.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-
-/// Locate the legacy system prompt file (prompts/legacy.md).
-/// Walks up from cwd and binary dir to find the project root.
-fn find_system_prompt() -> Result<PathBuf, String> {
-    let starts: Vec<PathBuf> = [
-        std::env::current_dir().ok(),
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    for start in &starts {
-        let mut dir = start.as_path();
-        loop {
-            let candidate = dir.join("prompts/legacy.md");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-            match dir.parent() {
-                Some(parent) => dir = parent,
-                None => break,
-            }
-        }
-    }
-    Err("prompts/legacy.md not found. Run from within the MiModel project.".to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-}
 
 /// JSON output from `claude --output-format json`
 #[derive(Debug, Deserialize)]
@@ -53,64 +20,6 @@ struct ClaudeJsonOutput {
     /// For assistant events, contains {"content": [{"text": "..."}]}
     #[serde(default)]
     message: Option<serde_json::Value>,
-}
-
-pub struct ClaudeClient {
-    model: Option<String>,
-    /// Captured from first response — used with --resume on subsequent calls.
-    session_id: Option<String>,
-    system_prompt: String,
-}
-
-impl ClaudeClient {
-    pub fn new(model: Option<String>) -> Result<Self, String> {
-        let system_prompt_path = find_system_prompt()?;
-        let system_prompt = std::fs::read_to_string(&system_prompt_path)
-            .map_err(|e| format!("Failed to read system prompt: {e}"))?;
-
-        Ok(Self {
-            model,
-            session_id: None,
-            system_prompt,
-        })
-    }
-
-    /// Send a prompt to Claude CLI and return the response text.
-    /// Thin wrapper around `send_prompt()` that updates `session_id`.
-    pub fn send(&mut self, prompt: &str, image_paths: &[PathBuf]) -> Result<String, String> {
-        let (result, new_sid) = send_prompt(
-            &self.model,
-            &self.system_prompt,
-            self.session_id.as_deref(),
-            prompt,
-            image_paths,
-            None,
-            None,
-            None,
-            None,
-            false,
-        )?;
-        if let Some(sid) = new_sid {
-            self.session_id = Some(sid);
-        }
-        Ok(result)
-    }
-
-    /// Reset the session (for "new" command) — drops session_id so next
-    /// call creates a fresh session with --system-prompt.
-    pub fn reset(&mut self) {
-        self.session_id = None;
-    }
-
-    /// Get the current claude session ID.
-    pub fn session_id(&self) -> Option<&str> {
-        self.session_id.as_deref()
-    }
-
-    /// Set the claude session ID (e.g. when resuming a saved session).
-    pub fn set_session_id(&mut self, id: Option<String>) {
-        self.session_id = id;
-    }
 }
 
 /// Send a prompt to Claude CLI. Returns `(response_text, captured_session_id)`.
@@ -368,19 +277,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_message_serialization() {
-        let msg = Message { role: "user".to_string(), content: "make a box".to_string() };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"role\":\"user\""));
-    }
-
-    #[test]
-    fn test_system_prompt_found() {
-        let result = find_system_prompt();
-        assert!(result.is_ok(), "prompts/legacy.md not found: {:?}", result);
-    }
-
-    #[test]
     fn test_send_prompt_signature() {
         // Verify send_prompt compiles with the correct signature.
         // We don't call it (would need a live claude instance) but verify it exists.
@@ -408,15 +304,4 @@ mod tests {
         ) -> Result<(String, Option<String>), String> = send_with_phase_prompt;
     }
 
-    #[test]
-    fn test_client_accessors() {
-        // Verify session_id and set_session_id compile correctly.
-        // ClaudeClient::new requires prompts/system.md, so only test accessor logic.
-        struct MockClient { session_id: Option<String> }
-        let mut c = MockClient { session_id: None };
-        c.session_id = Some("abc".to_string());
-        assert_eq!(c.session_id.as_deref(), Some("abc"));
-        c.session_id = None;
-        assert!(c.session_id.is_none());
-    }
 }

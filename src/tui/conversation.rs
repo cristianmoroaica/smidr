@@ -44,24 +44,9 @@ impl ConversationPane {
         // max_scroll is clamped in render(), so offset > content re-enables auto-scroll
     }
 
-    /// Scroll by page (visible height).
-    pub fn page_up(&mut self, visible_height: u16) {
-        self.scroll_up(visible_height.saturating_sub(2));
-    }
-
-    pub fn page_down(&mut self, visible_height: u16) {
-        self.scroll_down(visible_height.saturating_sub(2));
-    }
-
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = u16::MAX;
         self.auto_scroll = true;
-    }
-
-    /// Clamp scroll offset to actual content height. Call after render to keep
-    /// the offset in range so scroll_up() works correctly from a real position.
-    pub fn clamp_scroll(&mut self, max_scroll: u16) {
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     pub fn clear(&mut self) {

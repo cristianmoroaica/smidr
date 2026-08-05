@@ -10,23 +10,11 @@ use crate::phase::Phase;
 use crate::tui::Focus;
 
 /// Build phase indicator spans for the legend bar.
-pub fn phase_indicator_spans(
-    phase: Phase,
-    current_component_idx: Option<usize>,
-    components_len: usize,
-    current_component_name: Option<&str>,
-) -> Vec<Span<'static>> {
+pub fn phase_indicator_spans(phase: Phase) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let current_idx = phase.index();
 
-    let label = match phase {
-        Phase::Build if components_len > 0 => {
-            let current = current_component_idx.unwrap_or(0) + 1;
-            let name = current_component_name.unwrap_or("?");
-            format!("{} {}/{}: {}", phase.label(), current, components_len, name)
-        }
-        _ => phase.label().to_string(),
-    };
+    let label = phase.label().to_string();
     spans.push(Span::styled(
         format!(" {label} "),
         Style::default().fg(Color::Rgb(249, 226, 175)).bold(),
@@ -100,24 +88,15 @@ mod tests {
 
     #[test]
     fn phase_indicator_spec_phase() {
-        let spans = phase_indicator_spans(Phase::Spec, None, 0, None);
+        let spans = phase_indicator_spans(Phase::Spec);
         let label_content = &spans[0].content;
         assert!(label_content.contains("Spec"), "Expected 'Spec' in label, got: {label_content}");
     }
 
     #[test]
-    fn phase_indicator_component_with_progress() {
-        let spans = phase_indicator_spans(Phase::Build, Some(1), 5, Some("Case Body"));
-        let label_content = &spans[0].content;
-        assert!(label_content.contains("2/5"));
-        assert!(label_content.contains("Case Body"));
-    }
-
-    #[test]
-    fn phase_indicator_component_empty_list() {
-        let spans = phase_indicator_spans(Phase::Build, None, 0, None);
+    fn phase_indicator_build_label() {
+        let spans = phase_indicator_spans(Phase::Build);
         let label_content = &spans[0].content;
         assert!(label_content.contains("Build"));
-        assert!(!label_content.contains('/'));
     }
 }

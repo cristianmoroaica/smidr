@@ -187,55 +187,6 @@ pub fn build(
     run_python_subprocess(python, &args, timeout)
 }
 
-pub fn assemble(
-    python: &str,
-    manifest_path: &Path,
-    output_path: &Path,
-    step_path: Option<&Path>,
-    timeout: Duration,
-) -> BuildResult {
-    let mut args = vec![
-        "-m".to_string(),
-        "ai3d_cad".to_string(),
-        "assemble".to_string(),
-        "--manifest".to_string(),
-        manifest_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_path.to_string_lossy().into_owned(),
-    ];
-    if let Some(step) = step_path {
-        args.push("--step".to_string());
-        args.push(step.to_string_lossy().into_owned());
-    }
-    run_python_subprocess(python, &args, timeout)
-}
-
-pub fn paramset(
-    python: &str,
-    code_path: &Path,
-    params_path: &Path,
-    output_path: &Path,
-    step_path: Option<&Path>,
-    timeout: Duration,
-) -> BuildResult {
-    let mut args = vec![
-        "-m".to_string(),
-        "ai3d_cad".to_string(),
-        "paramset".to_string(),
-        "--code".to_string(),
-        code_path.to_string_lossy().into_owned(),
-        "--params".to_string(),
-        params_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_path.to_string_lossy().into_owned(),
-    ];
-    if let Some(step) = step_path {
-        args.push("--step".to_string());
-        args.push(step.to_string_lossy().into_owned());
-    }
-    run_python_subprocess(python, &args, timeout)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

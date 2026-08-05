@@ -21,9 +21,13 @@ pub struct ComponentState {
     #[serde(skip)]
     dir: Option<PathBuf>,
     #[serde(skip)]
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     history: Vec<String>, // previous code versions for undo
 }
 
+// Currently unused by the TUI; domain model the upcoming web layer will need.
+#[allow(dead_code)]
 impl ComponentState {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {

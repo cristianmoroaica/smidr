@@ -81,6 +81,8 @@ impl ModelSpec {
     ///   - No duplicate component IDs.
     ///   - All `depends_on` entries reference existing component IDs.
     ///   - No dependency cycles (DFS-based).
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn validate(&self) -> Result<(), String> {
         // Collect all IDs and check for duplicates.
         let mut seen: HashSet<&str> = HashSet::new();
@@ -151,6 +153,8 @@ impl ModelSpec {
     ///
     /// If `assembly.order` is present, use that ordering (filtering to
     /// components that exist).  Otherwise perform a topological sort.
+    // Currently unused by the TUI; domain model the upcoming web layer will need.
+    #[allow(dead_code)]
     pub fn build_order(&self) -> Result<Vec<&Component>, String> {
         // Validate first so callers can rely on a consistent state.
         self.validate()?;
