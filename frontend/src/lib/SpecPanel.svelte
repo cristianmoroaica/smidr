@@ -75,76 +75,207 @@
     flex-direction: column;
     min-height: 0;
     height: 100%;
+    background: var(--bg-surface, #1a1d24);
+    color: var(--text, #e6e9ef);
   }
 
   .header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.5rem 0.75rem;
-    background: var(--button-bg, #2b2d31);
-    border-bottom: 1px solid var(--border, #333);
+    padding: 0.5rem 0.8rem;
+    background: var(--bg-app, #111318);
+    border-bottom: 1px solid var(--border, #2e333d);
     flex: 0 0 auto;
   }
 
   .title {
+    font-size: 0.75rem;
     font-weight: 600;
-    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary, #9aa3b2);
   }
 
   .approve {
     font: inherit;
     padding: 0.3rem 0.7rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--border, #444);
-    background: var(--accent, #2b5fd9);
-    color: #fff;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid transparent;
+    background: var(--success, #3fb950);
+    color: var(--success-fg, #08130b);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-weight: 600;
+    font-size: 0.78rem;
+  }
+
+  .approve:not(:disabled):hover {
+    background: var(--success-hover, #35a344);
   }
 
   .approve:disabled {
-    opacity: 0.6;
+    background: transparent;
+    color: var(--success, #3fb950);
+    border-color: var(--success, #3fb950);
     cursor: not-allowed;
-    background: var(--button-bg, #2b2d31);
-    color: inherit;
+    opacity: 1;
   }
 
   .body {
     overflow-y: auto;
     min-height: 0;
     flex: 1;
-    padding: 0.5rem 0.75rem;
+    padding: 0.75rem 0.9rem 1.25rem;
   }
 
   .muted {
-    opacity: 0.6;
+    color: var(--text-muted, #6b7280);
+    opacity: 1;
     font-size: 0.85rem;
   }
 
   .section {
-    margin-bottom: 0.5rem;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
+    margin-bottom: 0.35rem;
+    border-bottom: 1px solid var(--border, #2e333d);
+    padding-bottom: 0.35rem;
   }
 
   .section summary {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     cursor: pointer;
     font-weight: 600;
-    padding: 0.2rem 0;
+    font-size: 0.8rem;
+    color: var(--text, #e6e9ef);
+    padding: 0.3rem 0;
+    list-style: none;
+  }
+
+  .section summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .section summary::before {
+    content: '▸';
+    color: var(--text-muted, #6b7280);
+    transition: transform 120ms;
+  }
+
+  .section[open] > summary::before {
+    transform: rotate(90deg);
   }
 
   .section-body {
-    padding: 0.2rem 0 0.4rem 0.5rem;
+    padding: 0.1rem 0 0.5rem 0.9rem;
+    color: var(--text-secondary, #9aa3b2);
+  }
+
+  .section :global(h1),
+  .section :global(h2),
+  .section :global(h3),
+  .section :global(h4),
+  .section :global(h5),
+  .section :global(h6) {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text, #e6e9ef);
+    margin: 0.7em 0 0.3em;
   }
 
   .section :global(p) {
-    margin: 0.3em 0;
+    margin: 0.35em 0;
+    line-height: 1.6;
+  }
+
+  .section :global(ul),
+  .section :global(ol) {
+    margin: 0.35em 0;
+    padding-left: 1.2em;
+  }
+
+  .section :global(li) {
+    margin: 0.2em 0;
+  }
+
+  .section :global(code) {
+    font-family: var(--font-mono, monospace);
+    background: rgba(255, 255, 255, 0.07);
+    padding: 0.05em 0.3em;
+    border-radius: 4px;
   }
 
   .section :global(pre) {
+    background: var(--bg-inset, #0d0f13);
+    border: 1px solid var(--border, #2e333d);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.6em 0.7em;
     overflow-x: auto;
-    padding: 0.5em;
-    background: rgba(0, 0, 0, 0.25);
-    border-radius: 0.3em;
+  }
+
+  .section :global(table) {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.78rem;
+  }
+
+  .section :global(th),
+  .section :global(td) {
+    border: 1px solid var(--border, #2e333d);
+    padding: 0.25rem 0.45rem;
+    text-align: left;
+  }
+
+  .section :global(th) {
+    background: var(--bg-raised, #22262f);
+  }
+
+  .section :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border, #2e333d);
+    margin: 0.8em 0;
+  }
+
+  .section :global(a) {
+    color: var(--accent, #4f8ff7);
+  }
+
+  .section :global(strong) {
+    color: var(--text, #e6e9ef);
+  }
+
+  .section :global(input[type='checkbox']) {
+    appearance: none;
+    width: 0.85em;
+    height: 0.85em;
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: 3px;
+    background: var(--bg-inset, #0d0f13);
+    vertical-align: -0.1em;
+    margin-right: 0.45em;
+    opacity: 1;
+    position: relative;
+  }
+
+  .section :global(input[type='checkbox']:checked) {
+    background: var(--success, #3fb950);
+    border-color: var(--success, #3fb950);
+  }
+
+  .section :global(input[type='checkbox']:checked)::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7em;
+    color: var(--success-fg, #08130b);
+  }
+
+  .section :global(li:has(input[type='checkbox'])) {
+    list-style: none;
+    margin-left: -1em;
   }
 </style>

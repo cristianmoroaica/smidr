@@ -28,10 +28,10 @@
   let hoverX = $state(0);
   let hoverY = $state(0);
 
-  const HOVER_COLOR = 0x66aaff;
+  const HOVER_COLOR = 0x4f8ff7;
   const SELECT_COLOR = 0xffaa33;
-  const DIFF_COLOR = 0xffcc00;
-  const FAILED_COLOR = 0xff3333;
+  const DIFF_COLOR = 0xd29922;
+  const FAILED_COLOR = 0xf05252;
   const GHOST_OPACITY = 0.25;
 
   type Manifest = {
@@ -611,7 +611,7 @@
     if (!containerEl || !canvasEl) return;
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1b1e);
+    scene.background = new THREE.Color(0x14161b);
 
     camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
     camera.position.set(3, 3, 3);
@@ -778,27 +778,32 @@
   <canvas bind:this={canvasEl}></canvas>
 
   <div class="toolbar" class:below-banner={!!loadError}>
-    <button
-      type="button"
-      class:pressed={ghostEnabled}
-      onclick={() => (ghostEnabled = !ghostEnabled)}
-    >
-      Ghost
-    </button>
-    <button
-      type="button"
-      class:pressed={measureEnabled}
-      onclick={() => (measureEnabled = !measureEnabled)}
-    >
-      Measure
-    </button>
-    <button
-      type="button"
-      class:pressed={dimensionsEnabled}
-      onclick={() => (dimensionsEnabled = !dimensionsEnabled)}
-    >
-      Dimensions
-    </button>
+    <div class="segmented">
+      <button
+        type="button"
+        class:pressed={ghostEnabled}
+        aria-pressed={ghostEnabled}
+        onclick={() => (ghostEnabled = !ghostEnabled)}
+      >
+        Ghost
+      </button>
+      <button
+        type="button"
+        class:pressed={measureEnabled}
+        aria-pressed={measureEnabled}
+        onclick={() => (measureEnabled = !measureEnabled)}
+      >
+        Measure
+      </button>
+      <button
+        type="button"
+        class:pressed={dimensionsEnabled}
+        aria-pressed={dimensionsEnabled}
+        onclick={() => (dimensionsEnabled = !dimensionsEnabled)}
+      >
+        Dimensions
+      </button>
+    </div>
     {#if ghostEnabled && ghostNote}
       <span class="toolbar-note">{ghostNote}</span>
     {/if}
@@ -847,7 +852,7 @@
     height: 100%;
     min-height: 0;
     overflow: hidden;
-    background: var(--viewer-bg, #1a1b1e);
+    background: var(--viewer-bg, #14161b);
   }
 
   canvas {
@@ -862,8 +867,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--muted-fg, #888);
-    font-size: 0.95rem;
+    color: var(--text-muted, #6b7280);
+    font-size: 0.9rem;
     pointer-events: none;
   }
 
@@ -872,10 +877,11 @@
     top: 0.5rem;
     left: 0.5rem;
     right: 0.5rem;
-    background: var(--danger, #a83232);
-    color: #fff;
+    background: rgba(240, 82, 82, 0.16);
+    border: 1px solid var(--danger, #f05252);
+    color: var(--text, #e6e9ef);
     padding: 0.4rem 0.6rem;
-    border-radius: 0.3rem;
+    border-radius: var(--radius-sm, 6px);
     font-size: 0.8rem;
     pointer-events: none;
     z-index: 6;
@@ -883,11 +889,11 @@
 
   .toolbar {
     position: absolute;
-    top: 0.5rem;
-    left: 0.5rem;
+    top: 0.6rem;
+    left: 0.6rem;
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.5rem;
     pointer-events: auto;
     z-index: 5;
   }
@@ -896,43 +902,76 @@
     top: 3.1rem;
   }
 
-  .toolbar button {
-    font: inherit;
-    font-size: 0.75rem;
-    padding: 0.3rem 0.6rem;
-    border-radius: 0.3rem;
-    border: 1px solid var(--border, #444);
-    background: var(--button-bg, rgba(43, 45, 49, 0.85));
-    color: inherit;
-    cursor: pointer;
+  .segmented {
+    display: inline-flex;
+    background: rgba(26, 29, 36, 0.9);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-sm, 6px);
+    overflow: hidden;
+    backdrop-filter: blur(6px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
   }
 
-  .toolbar button.pressed {
-    background: var(--accent, #3d6fe0);
-    border-color: var(--accent, #3d6fe0);
-    color: #fff;
+  .segmented button {
+    font: inherit;
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.35rem 0.7rem;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border, #2e333d);
+    color: var(--text-secondary, #9aa3b2);
+    cursor: pointer;
+    transition:
+      background 120ms,
+      color 120ms;
+  }
+
+  .segmented button:last-child {
+    border-right: none;
+  }
+
+  .segmented button:hover {
+    background: var(--bg-hover, #2a2f3a);
+    color: var(--text, #e6e9ef);
+  }
+
+  .segmented button.pressed {
+    background: var(--accent, #4f8ff7);
+    color: var(--accent-fg, #0b1220);
+    font-weight: 600;
+  }
+
+  .segmented button:focus-visible {
+    outline: 2px solid rgba(79, 143, 247, 0.5);
+    outline-offset: -2px;
   }
 
   .toolbar-note {
     font-size: 0.7rem;
-    color: var(--muted-fg, #888);
-    background: rgba(0, 0, 0, 0.5);
-    padding: 0.15rem 0.4rem;
-    border-radius: 0.25rem;
+    color: var(--text-secondary, #9aa3b2);
+    background: rgba(13, 15, 19, 0.8);
+    border: 1px solid var(--border, #2e333d);
+    padding: 0.2rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
   }
 
   .dimensions-card {
     position: absolute;
-    top: 0.5rem;
-    right: 0.5rem;
+    top: 0.6rem;
+    right: 0.6rem;
     max-width: 45%;
     max-height: 60%;
     overflow: auto;
-    background: rgba(0, 0, 0, 0.65);
-    color: #fff;
-    padding: 0.5rem 0.6rem;
-    border-radius: 0.3rem;
+    background: rgba(26, 29, 36, 0.92);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
+    color: var(--text, #e6e9ef);
+    padding: 0.6rem 0.7rem;
     font-size: 0.75rem;
+    backdrop-filter: blur(6px);
     pointer-events: none;
     z-index: 5;
   }
@@ -942,39 +981,59 @@
   }
 
   .dimensions-title {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary, #9aa3b2);
     font-weight: 600;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.4rem;
   }
 
   .dimensions-empty {
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--text-muted, #6b7280);
   }
 
   .dimensions-row {
     display: flex;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 1rem;
+    padding: 0.15rem 0;
+    font-family: var(--font-mono, monospace);
+  }
+
+  .dimensions-row span:first-child {
+    color: var(--text-secondary, #9aa3b2);
+  }
+
+  .dimensions-row span:last-child {
+    color: var(--text, #e6e9ef);
   }
 
   .measure-label {
     position: fixed;
     transform: translate(-50%, -50%);
-    background: rgba(0, 0, 0, 0.75);
-    color: #fff;
-    padding: 0.15rem 0.45rem;
-    border-radius: 0.25rem;
-    font-size: 0.75rem;
+    background: rgba(13, 15, 19, 0.9);
+    border: 1px solid var(--border-strong, #3d434f);
+    color: var(--text, #e6e9ef);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    font-family: var(--font-mono, monospace);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
     pointer-events: none;
     z-index: 10;
   }
 
   .hover-label {
     position: fixed;
-    background: rgba(0, 0, 0, 0.75);
-    color: #fff;
-    padding: 0.15rem 0.45rem;
-    border-radius: 0.25rem;
-    font-size: 0.75rem;
+    background: rgba(13, 15, 19, 0.9);
+    border: 1px solid var(--border-strong, #3d434f);
+    color: var(--text, #e6e9ef);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    font-family: var(--font-mono, monospace);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
     pointer-events: none;
     z-index: 10;
   }

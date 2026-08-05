@@ -121,10 +121,11 @@
   .ref-picker {
     display: flex;
     flex-direction: column;
-    background: var(--tool-call-bg, #1b1c20);
-    border: 1px solid var(--tool-call-border, #35363c);
-    border-radius: 0.4rem;
-    overflow: hidden;
+    background: var(--bg-raised, #22262f);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
+    padding: 0.25rem;
     max-height: 12rem;
     overflow-y: auto;
   }
@@ -134,10 +135,11 @@
     justify-content: space-between;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.35rem 0.6rem;
+    padding: 0.4rem 0.55rem;
     background: transparent;
     border: none;
-    color: inherit;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--text, #e6e9ef);
     font: inherit;
     text-align: left;
     cursor: pointer;
@@ -146,21 +148,29 @@
 
   .item.active,
   .item:hover {
-    background: var(--button-bg, #2b2d31);
+    background: var(--accent-soft, rgba(79, 143, 247, 0.14));
+  }
+
+  .item.active {
+    box-shadow: inset 0 0 0 1px var(--accent-border, rgba(79, 143, 247, 0.45));
   }
 
   .item.muted {
-    opacity: 0.6;
+    color: var(--text-muted, #6b7280);
+    opacity: 1;
     cursor: default;
   }
 
   .name {
     font-size: 0.85rem;
+    color: var(--text, #e6e9ef);
   }
 
   .meta {
-    font-size: 0.75rem;
-    opacity: 0.6;
+    font-size: 0.72rem;
+    color: var(--text-muted, #6b7280);
+    opacity: 1;
+    font-family: var(--font-mono, monospace);
     white-space: nowrap;
   }
 </style>

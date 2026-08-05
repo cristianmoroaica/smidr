@@ -182,90 +182,164 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    background: var(--bg-surface, #1a1d24);
+    color: var(--text, #e6e9ef);
   }
 
   .log {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 1rem 0.9rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.6rem;
   }
 
   .bubble {
-    max-width: 80%;
-    padding: 0.6rem 0.9rem;
-    border-radius: 0.5rem;
-    line-height: 1.4;
+    max-width: 88%;
+    padding: 0.55rem 0.8rem;
+    border-radius: var(--radius-md, 10px);
+    line-height: 1.5;
+    font-size: 0.875rem;
+    overflow-wrap: anywhere;
   }
 
   .bubble.user {
     align-self: flex-end;
-    background: var(--bubble-user-bg, #2b5fd9);
-    color: var(--bubble-user-fg, #fff);
+    background: var(--accent-soft, rgba(79, 143, 247, 0.14));
+    border: 1px solid var(--accent-border, rgba(79, 143, 247, 0.45));
+    color: var(--text, #e6e9ef);
   }
 
   .bubble.assistant {
     align-self: flex-start;
-    background: var(--bubble-assistant-bg, #24262b);
-    color: var(--bubble-assistant-fg, #e8e8ea);
+    background: var(--bg-raised, #22262f);
+    border: 1px solid var(--border, #2e333d);
+    color: var(--text, #e6e9ef);
   }
 
   .bubble.system {
-    align-self: center;
-    background: var(--bubble-system-bg, #3a3a3f);
-    color: var(--bubble-system-fg, #c9c9cd);
-    font-style: italic;
-    font-size: 0.85rem;
+    position: relative;
+    align-self: stretch;
+    max-width: 100%;
+    background: transparent;
+    border: none;
+    border-left: 2px solid var(--border-strong, #3d434f);
+    border-radius: 0;
+    padding: 0.15rem 0 0.15rem 0.6rem;
+    color: var(--text-secondary, #9aa3b2);
+    font-style: normal;
+    font-size: 0.8rem;
   }
 
   .bubble.streaming {
-    opacity: 0.85;
+    opacity: 0.9;
   }
 
   .role-label {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.6;
-    margin-bottom: 0.2rem;
+    letter-spacing: 0.06em;
+    color: var(--text-muted, #6b7280);
+    opacity: 1;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+  }
+
+  .bubble.system .role-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .content :global(p) {
     margin: 0.3em 0;
   }
 
+  .content :global(code) {
+    background: rgba(255, 255, 255, 0.07);
+    padding: 0.05em 0.3em;
+    border-radius: 4px;
+    font-family: var(--font-mono, monospace);
+  }
+
   .content :global(pre) {
     overflow-x: auto;
-    padding: 0.5em;
-    background: rgba(0, 0, 0, 0.25);
-    border-radius: 0.3em;
+    padding: 0.6em 0.7em;
+    background: var(--bg-inset, #0d0f13);
+    border: 1px solid var(--border, #2e333d);
+    border-radius: var(--radius-sm, 6px);
+  }
+
+  .content :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .content :global(ul),
+  .content :global(ol) {
+    margin: 0.35em 0;
+    padding-left: 1.15em;
+  }
+
+  .content :global(li) {
+    margin: 0.15em 0;
+  }
+
+  .content :global(a) {
+    color: var(--accent, #4f8ff7);
   }
 
   .tool-call {
     align-self: stretch;
-    background: var(--tool-call-bg, #1b1c20);
-    border: 1px solid var(--tool-call-border, #35363c);
-    border-radius: 0.4rem;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.85rem;
+    background: var(--bg-inset, #0d0f13);
+    border: 1px solid var(--border, #2e333d);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #9aa3b2);
   }
 
   .tool-call summary {
     cursor: pointer;
     font-weight: 600;
+    color: var(--text, #e6e9ef);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .tool-call summary::before {
+    content: '▸';
+    color: var(--text-muted, #6b7280);
+    transition: transform 120ms;
+  }
+
+  .tool-call[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  .tool-call summary::-webkit-details-marker {
+    display: none;
   }
 
   .tool-detail {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+    color: var(--text-secondary, #9aa3b2);
     white-space: pre-wrap;
     overflow-x: auto;
     margin: 0.4rem 0 0 0;
   }
 
   .composer-wrap {
-    border-top: 1px solid var(--border, #333);
+    border-top: 1px solid var(--border, #2e333d);
+    background: var(--bg-surface, #1a1d24);
   }
 
   .chips {
@@ -279,15 +353,22 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    background: var(--chip-bg, #2b5fd9);
-    color: #fff;
-    padding: 0.15rem 0.3rem 0.15rem 0.6rem;
-    border-radius: 1rem;
-    font-size: 0.8rem;
+    background: var(--bg-raised, #22262f);
+    border: 1px solid var(--border-strong, #3d434f);
+    color: var(--text, #e6e9ef);
+    padding: 0.1rem 0.25rem 0.1rem 0.6rem;
+    border-radius: var(--radius-pill, 999px);
+    font-size: 0.75rem;
   }
 
   .chip.ref {
-    background: var(--ref-chip-bg, #3f7d3f);
+    border-color: var(--success, #3fb950);
+    color: var(--success, #3fb950);
+  }
+
+  .chip:not(.ref) {
+    border-color: var(--accent-border, rgba(79, 143, 247, 0.45));
+    color: var(--accent, #4f8ff7);
   }
 
   .textarea-wrap {
@@ -310,6 +391,7 @@
     background: transparent;
     border: none;
     color: inherit;
+    opacity: 0.7;
     font: inherit;
     font-size: 0.9rem;
     line-height: 1;
@@ -319,7 +401,8 @@
   }
 
   .chip-remove:hover {
-    background: rgba(255, 255, 255, 0.2);
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.12);
   }
 
   .composer {
@@ -333,11 +416,23 @@
     width: 100%;
     resize: vertical;
     font: inherit;
-    padding: 0.5rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--border, #444);
-    background: var(--input-bg, #1a1b1e);
-    color: inherit;
+    padding: 0.6rem 0.7rem;
+    line-height: 1.5;
+    min-height: 4.5rem;
+    border-radius: var(--radius-md, 10px);
+    border: 1px solid var(--border-strong, #3d434f);
+    background: var(--bg-inset, #0d0f13);
+    color: var(--text, #e6e9ef);
+  }
+
+  textarea::placeholder {
+    color: var(--text-muted, #6b7280);
+  }
+
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent, #4f8ff7);
+    box-shadow: var(--focus-ring, 0 0 0 2px rgba(79, 143, 247, 0.5));
   }
 
   .composer-actions {
@@ -349,27 +444,43 @@
   button {
     font: inherit;
     padding: 0.5rem 0.9rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--border, #444);
-    background: var(--button-bg, #2b2d31);
-    color: inherit;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--border-strong, #3d434f);
+    background: var(--bg-raised, #22262f);
+    color: var(--text, #e6e9ef);
     cursor: pointer;
   }
 
+  button:focus-visible {
+    box-shadow: var(--focus-ring, 0 0 0 2px rgba(79, 143, 247, 0.5));
+  }
+
   button:disabled {
-    opacity: 0.5;
+    background: transparent;
+    color: var(--text-muted, #6b7280);
+    border-color: var(--border, #2e333d);
     cursor: not-allowed;
+    opacity: 1;
   }
 
   button.send {
-    background: var(--accent, #2b5fd9);
-    color: #fff;
+    background: var(--accent, #4f8ff7);
+    color: var(--accent-fg, #0b1220);
     border-color: transparent;
+    font-weight: 600;
+  }
+
+  button.send:hover:not(:disabled) {
+    background: var(--accent-hover, #6ba1f9);
   }
 
   button.cancel {
-    background: var(--danger, #a83232);
-    color: #fff;
-    border-color: transparent;
+    background: transparent;
+    color: var(--danger, #f05252);
+    border-color: var(--danger, #f05252);
+  }
+
+  button.cancel:hover {
+    background: var(--danger-soft, rgba(240, 82, 82, 0.14));
   }
 </style>

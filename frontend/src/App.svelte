@@ -185,20 +185,22 @@
 
   {#if !projectId}
     <div class="picker">
-      {#if loadingProjects}
-        <p>Loading projects...</p>
-      {:else if projectChoices.length > 0}
-        <h2>Select a project</h2>
-        <ul>
-          {#each projectChoices as p}
-            <li>
-              <button onclick={() => connect(p.id)}>{p.name ?? p.id}</button>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p>No project selected.</p>
-      {/if}
+      <div class="picker-card">
+        {#if loadingProjects}
+          <p>Loading projects...</p>
+        {:else if projectChoices.length > 0}
+          <h2>Select a project</h2>
+          <ul>
+            {#each projectChoices as p}
+              <li>
+                <button onclick={() => connect(p.id)}>{p.name ?? p.id}</button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p>No project selected.</p>
+        {/if}
+      </div>
     </div>
   {:else}
     <Stepper {phase} {approved} {onApprove} {onAdvance} {onBack} />
@@ -241,6 +243,8 @@
     flex-direction: column;
     height: 100vh;
     min-height: 0;
+    background: var(--bg-app);
+    color: var(--text);
   }
 
   .body {
@@ -269,7 +273,8 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    border-left: 1px solid var(--border, #333);
+    border-left: 1px solid var(--border);
+    background: var(--bg-surface);
   }
 
   .right :global(.chat) {
@@ -279,7 +284,7 @@
 
   .right :global(.spec-panel) {
     flex: 0 1 40%;
-    border-top: 1px solid var(--border, #333);
+    border-top: 1px solid var(--border);
     min-height: 0;
   }
 
@@ -288,21 +293,48 @@
     justify-content: space-between;
     align-items: center;
     padding: 0.5rem 1rem;
-    background: var(--danger, #a83232);
-    color: #fff;
+    background: var(--danger-soft);
+    color: var(--text);
+    border-bottom: 1px solid var(--danger);
   }
 
   .error-banner button {
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    color: #fff;
-    border-radius: 0.3rem;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    border-radius: var(--radius-sm);
     padding: 0.2rem 0.6rem;
     cursor: pointer;
+    transition: background 120ms;
+  }
+
+  .error-banner button:hover {
+    background: var(--danger-soft);
   }
 
   .picker {
-    padding: 2rem;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1.5rem;
+  }
+
+  .picker-card {
+    max-width: 34rem;
+    width: 100%;
+  }
+
+  .picker h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 1rem;
+  }
+
+  .picker p {
+    color: var(--text-secondary);
   }
 
   .picker ul {
@@ -314,12 +346,24 @@
   }
 
   .picker button {
+    width: 100%;
+    text-align: left;
     font: inherit;
-    padding: 0.5rem 1rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--border, #444);
-    background: var(--button-bg, #2b2d31);
-    color: inherit;
+    padding: 0.75rem 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
     cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+
+  .picker button:hover {
+    background: var(--bg-raised);
+    border-color: var(--border-strong);
+  }
+
+  .picker button:focus-visible {
+    box-shadow: var(--focus-ring);
   }
 </style>
