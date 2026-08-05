@@ -16,7 +16,9 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/projects/{id}", axum::routing::delete(delete_project))
         .with_state(state.clone())
         // Task 2.2: WebSocket session channel, defined in `server::ws`.
-        .merge(crate::server::ws::router(state))
+        .merge(crate::server::ws::router(state.clone()))
+        // Task 3.1: per-iteration GLB/manifest artifact downloads.
+        .merge(crate::server::artifacts::router(state.clone()))
         // Task 2.3: embedded frontend static assets / SPA fallback. Placed
         // last via `.fallback` so it never shadows `/api/*` or the
         // `/api/session` WebSocket route above.
@@ -97,7 +99,7 @@ struct CreateProjectRequest {
 /// skipped this check entirely, allowing a percent-encoded `..%2Ffoo`
 /// segment (axum's `Path<String>` percent-decodes it back to `../foo`) to
 /// escape `root_dir()` and recursively delete an arbitrary directory.
-fn is_valid_project_name(name: &str) -> bool {
+pub(crate) fn is_valid_project_name(name: &str) -> bool {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return false;

@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "dompurify": "^3.4.13",
-    "marked": "^12.0.0"
+    "marked": "^12.0.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@types/three": "^0.185.4",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "tslib": "^2.6.0",

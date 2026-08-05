@@ -11,15 +11,19 @@
     streaming,
     toolCalls,
     busy,
+    selectedParts,
     onSend,
-    onCancel
+    onCancel,
+    onRemovePart
   }: {
     messages: Message[];
     streaming: string;
     toolCalls: ToolCall[];
     busy: boolean;
+    selectedParts: string[];
     onSend: (text: string) => void;
     onCancel: () => void;
+    onRemovePart: (name: string) => void;
   } = $props();
 
   let draft = $state('');
@@ -81,18 +85,32 @@
     {/each}
   </div>
 
-  <div class="composer">
-    <textarea
-      bind:value={draft}
-      onkeydown={onKeydown}
-      placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-      rows="3"
-    ></textarea>
-    <div class="composer-actions">
-      {#if busy}
-        <button class="cancel" onclick={onCancel}>Cancel</button>
-      {/if}
-      <button class="send" onclick={submit} disabled={!draft.trim()}>Send</button>
+  <div class="composer-wrap">
+    {#if selectedParts.length > 0}
+      <div class="chips">
+        {#each selectedParts as name}
+          <span class="chip">
+            {name}
+            <button class="chip-remove" onclick={() => onRemovePart(name)} aria-label="Remove {name}"
+              >×</button
+            >
+          </span>
+        {/each}
+      </div>
+    {/if}
+    <div class="composer">
+      <textarea
+        bind:value={draft}
+        onkeydown={onKeydown}
+        placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+        rows="3"
+      ></textarea>
+      <div class="composer-actions">
+        {#if busy}
+          <button class="cancel" onclick={onCancel}>Cancel</button>
+        {/if}
+        <button class="send" onclick={submit} disabled={!draft.trim()}>Send</button>
+      </div>
     </div>
   </div>
 </div>
@@ -185,11 +203,48 @@
     margin: 0.4rem 0 0 0;
   }
 
+  .composer-wrap {
+    border-top: 1px solid var(--border, #333);
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: var(--chip-bg, #2b5fd9);
+    color: #fff;
+    padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+    border-radius: 1rem;
+    font-size: 0.8rem;
+  }
+
+  .chip-remove {
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0.1rem 0.3rem;
+    cursor: pointer;
+    border-radius: 50%;
+  }
+
+  .chip-remove:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
   .composer {
     display: flex;
     gap: 0.5rem;
     padding: 0.75rem;
-    border-top: 1px solid var(--border, #333);
     align-items: flex-end;
   }
 

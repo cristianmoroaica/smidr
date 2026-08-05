@@ -10,6 +10,74 @@ import json
 import os
 import sys
 
+
+def _glb_export():
+    """Lazily import ai3d_cad.glb_export, adding python/src to sys.path if needed.
+
+    Returns None (rather than raising) when the module is unavailable, so a
+    missing/broken glb_export dependency can never break the build tool.
+    """
+    try:
+        from ai3d_cad import glb_export
+        return glb_export
+    except ImportError:
+        pass
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src_dir = os.path.join(repo_root, "python", "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    try:
+        from ai3d_cad import glb_export
+        return glb_export
+    except ImportError:
+        return None
+
+
+def _export_build_iteration(session_dir, label, stl_path, dims_str):
+    """Export a named-GLB + manifest for the latest successful build.
+
+    Best-effort: any failure returns None and must never fail the build.
+    """
+    if not session_dir:
+        return None
+    glb_export = _glb_export()
+    if glb_export is None:
+        return None
+    try:
+        components = {}
+        components_root = os.path.join(session_dir, "components")
+        if os.path.isdir(components_root):
+            for name in sorted(os.listdir(components_root)):
+                candidate = os.path.join(components_root, name, "result.stl")
+                if os.path.exists(candidate):
+                    components[name] = candidate
+        if not components and stl_path and os.path.exists(stl_path):
+            components[label or "model"] = stl_path
+        if not components:
+            return None
+
+        comps = glb_export.load_components(components)
+        if not comps:
+            return None
+
+        spec_dims = {}
+        if dims_str:
+            parts = str(dims_str).lower().split("x")
+            if len(parts) == 3:
+                try:
+                    spec_dims = {
+                        "x": float(parts[0]),
+                        "y": float(parts[1]),
+                        "z": float(parts[2]),
+                    }
+                except ValueError:
+                    spec_dims = {}
+
+        return glb_export.export_iteration(session_dir, comps, spec_dims)
+    except Exception:
+        return None
+
+
 # ── JSON-RPC helpers ──
 
 def send_response(id, result):
@@ -907,6 +975,11 @@ def handle_tool_call(name, arguments, session_dir):
                     build_info += f"\nCylindrical features: {result['holes']}"
                 build_info += "\nCoordinate system: +X=right, +Y=forward, +Z=up"
                 build_info += "\nViewer will auto-reload. Use screenshot_viewer to verify geometry."
+                iteration_n = _export_build_iteration(
+                    session_dir, label, result.get("stl_path"), result.get("dimensions", "")
+                )
+                if isinstance(iteration_n, int):
+                    build_info += f"\nIteration {iteration_n} exported (iteration_{iteration_n:03d}.glb)."
                 return [{"type": "text", "text": build_info}]
             else:
                 error = result['error']

@@ -4,6 +4,7 @@
 //! project id, and exposes the project REST API (Task 2.1) plus (in a later
 //! task) the WebSocket session channel.
 
+pub mod artifacts;
 pub mod assets;
 pub mod routes;
 pub mod ws;

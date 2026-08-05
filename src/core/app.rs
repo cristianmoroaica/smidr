@@ -488,9 +488,11 @@ impl AppCore {
 
     // ---- prompt submission ---------------------------------------------
 
-    /// `part_refs` is accepted and ignored for now — consumed starting in
-    /// Phase 3 once the viewer can select parts by name.
-    pub fn submit_prompt(&mut self, text: &str, _part_refs: &[String], lib_refs: &[String]) {
+    /// Non-empty `part_refs` are prepended to the dispatched prompt as
+    /// `<selected_part>` lines (one per ref) before it is sent to Claude.
+    /// They are NOT part of the conversation-visible user message — the
+    /// pushed/stored history always shows the user's raw text untagged.
+    pub fn submit_prompt(&mut self, text: &str, part_refs: &[String], lib_refs: &[String]) {
         for r in lib_refs {
             if !self.active_refs.contains(r) {
                 self.active_refs.push(r.clone());
@@ -775,21 +777,44 @@ impl AppCore {
             return;
         }
 
+        // Build the dispatch text: non-empty part_refs are prepended as
+        // <selected_part> lines. This is what gets sent to Claude — the
+        // conversation-visible clean_text above is left untouched.
+        let dispatch_text = {
+            let wrapped: Vec<String> = part_refs.iter()
+                .map(|r| r.trim())
+                .filter(|r| !r.is_empty())
+                .map(|r| r.replace(['<', '>'], ""))
+                .filter(|r| !r.is_empty())
+                .map(|r| format!("<selected_part>{r}</selected_part>"))
+                .collect();
+            if wrapped.is_empty() {
+                clean_text.clone()
+            } else {
+                format!("{}\n\n{}", wrapped.join("\n"), clean_text)
+            }
+        };
+
         // Phase-specific dispatch
         match self.phase {
             Phase::Spec => {
-                self.send_spec_prompt(&clean_text, all_images);
+                self.send_spec_prompt(&dispatch_text, all_images);
             }
             Phase::Build => {
                 let trimmed = clean_text.trim().to_lowercase();
                 if trimmed == "undo" {
                     self.undo_component();
                 } else {
-                    self.send_build_prompt(&clean_text, all_images);
+                    self.send_build_prompt(&dispatch_text, all_images);
                 }
             }
             Phase::Refine => {
-                self.send_refine_prompt(&clean_text, all_images);
+                let t = clean_text.trim().to_lowercase();
+                if t.starts_with("set ") || t == "export" {
+                    self.send_refine_prompt(&clean_text, all_images);
+                } else {
+                    self.send_refine_prompt(&dispatch_text, all_images);
+                }
             }
         }
     }
@@ -2181,16 +2206,87 @@ mod tests {
     }
 
     #[test]
-    fn submit_prompt_part_refs_are_accepted_and_ignored() {
+    fn submit_prompt_wraps_part_refs_for_dispatch() {
         with_test_home(|| {
             let mut core = test_core(None);
-            core.claude.busy = BusyState::Thinking;
-            // A non-empty part_refs slice must not panic and must not appear
-            // in active_refs (consumed starting in Phase 3, per the contract
-            // documented on `submit_prompt`).
-            let part_refs = vec!["nonexistent_part".to_string()];
-            core.submit_prompt("hello", &part_refs, &[]);
+
+            let part_refs = vec!["lid".to_string(), "base".to_string()];
+            core.submit_prompt("make it wider", &part_refs, &[]);
+
+            let log = captured(&core);
+            assert_eq!(log.len(), 1, "exactly one captured dispatch");
+            assert!(
+                log[0].prompt.starts_with(
+                    "<selected_part>lid</selected_part>\n<selected_part>base</selected_part>\n\n"
+                ),
+                "dispatched prompt starts with the wrapped part refs: {}",
+                log[0].prompt
+            );
+            assert!(
+                log[0].prompt.contains("make it wider"),
+                "dispatched prompt still contains the user's text: {}",
+                log[0].prompt
+            );
+
+            let messages = core.messages();
+            assert_eq!(messages.last().unwrap().0, "user");
+            assert_eq!(
+                messages.last().unwrap().1,
+                "make it wider",
+                "conversation-visible message has no <selected_part> tags"
+            );
+
             assert!(core.active_refs.is_empty());
+        });
+    }
+
+    #[test]
+    fn submit_prompt_without_part_refs_is_unchanged() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+
+            core.submit_prompt("hello", &[], &[]);
+
+            let log = captured(&core);
+            assert_eq!(log.len(), 1, "exactly one captured dispatch");
+            assert!(log[0].prompt.contains("hello"));
+            assert!(
+                !log[0].prompt.contains("<selected_part>"),
+                "no part_refs means no wrapping: {}",
+                log[0].prompt
+            );
+        });
+    }
+
+    #[test]
+    fn submit_prompt_refine_export_with_part_refs_still_runs_export_not_dispatch() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            assert_eq!(core.try_switch_phase(Phase::Refine), Ok(()));
+
+            core.submit_prompt("export", &["lid".to_string()], &[]);
+
+            let log = captured(&core);
+            assert!(
+                log.is_empty(),
+                "export must run handle_export, not be dispatched to Claude: {log:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn submit_prompt_refine_set_with_part_refs_still_runs_param_edit_not_dispatch() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            assert_eq!(core.try_switch_phase(Phase::Refine), Ok(()));
+
+            core.submit_prompt("set WIDTH 42", &["lid".to_string()], &[]);
+
+            let log = captured(&core);
+            assert!(
+                log.is_empty(),
+                "set commands must run handle_param_edit, not be dispatched to Claude: {log:?}"
+            );
         });
     }
 

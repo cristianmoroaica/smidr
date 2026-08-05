@@ -199,16 +199,25 @@ fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {
 
     core.poll_events()
         .into_iter()
-        .map(|ev| match ev {
-            CoreEvent::StreamDelta(text) => json!({"type": "stream_delta", "text": text}),
+        .flat_map(|ev| match ev {
+            CoreEvent::StreamDelta(text) => {
+                Some(json!({"type": "stream_delta", "text": text}))
+            }
             CoreEvent::ToolCall { name, detail } => {
-                json!({"type": "tool_call", "name": name, "detail": detail})
+                Some(json!({"type": "tool_call", "name": name, "detail": detail}))
             }
             CoreEvent::BuildArtifact { .. } => {
-                json!({"type": "iteration_added", "n": core.iteration()})
+                // The iteration number is derived from the GLB artifacts
+                // actually written to disk, not from `core.iteration()`
+                // (which counts build attempts, not successful exports). If
+                // no GLB exists yet (e.g. the export step hasn't run), emit
+                // nothing for this event.
+                crate::server::artifacts::glb_iterations(core.session_dir())
+                    .last()
+                    .map(|n| json!({"type": "iteration_added", "n": n}))
             }
-            CoreEvent::Error(message) => json!({"type": "error", "message": message}),
-            CoreEvent::ResponseDone => snapshot_value(core),
+            CoreEvent::Error(message) => Some(json!({"type": "error", "message": message})),
+            CoreEvent::ResponseDone => Some(snapshot_value(core)),
         })
         .collect()
 }
@@ -226,7 +235,7 @@ fn snapshot_value(core: &AppCore) -> Value {
         .iter()
         .map(|(role, content)| json!({"role": role, "content": content}))
         .collect();
-    let iterations: Vec<u32> = (1..=core.iteration()).collect();
+    let iterations: Vec<u32> = crate::server::artifacts::glb_iterations(core.session_dir());
     let spec = if core.spec_content().is_empty() {
         Value::Null
     } else {

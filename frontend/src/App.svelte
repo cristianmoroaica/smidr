@@ -1,6 +1,8 @@
 <script lang="ts">
   import Chat from './lib/Chat.svelte';
   import Stepper from './lib/Stepper.svelte';
+  import Viewer from './lib/Viewer.svelte';
+  import Timeline from './lib/Timeline.svelte';
   import { connectSession, type ServerMsg, type SessionClient } from './lib/ws';
 
   type Message = { role: string; content: string };
@@ -20,6 +22,9 @@
   let spec = $state<string | null>(null);
   let lastError = $state<string | null>(null);
   let busy = $state(false);
+  let selectedParts = $state<string[]>([]);
+  let viewing = $state<number | null>(null);
+  let specOpen = $state(false);
 
   let client: SessionClient | null = null;
 
@@ -47,7 +52,13 @@
         approved = m.approved;
         break;
       case 'iteration_added':
-        iterations = [...iterations, m.n];
+        // The server derives `n` from the GLBs on disk and re-emits it for
+        // every BuildArtifact event, including ones that produced no new
+        // export (e.g. the viewer-open signal). Ignore repeats.
+        if (!iterations.includes(m.n)) {
+          iterations = [...iterations, m.n].sort((a, b) => a - b);
+          viewing = null;
+        }
         break;
       case 'build_progress':
         // Surfaced via tool-call-style row so it's visible in the log.
@@ -107,7 +118,22 @@
     if (!client) return;
     busy = true;
     conversation = [...conversation, { role: 'user', content: text }];
-    client.send({ type: 'prompt', text, part_refs: [], lib_refs: [] });
+    client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [] });
+    selectedParts = [];
+  }
+
+  function onPartSelected(name: string) {
+    if (!selectedParts.includes(name)) {
+      selectedParts = [...selectedParts, name];
+    }
+  }
+
+  function onRemovePart(name: string) {
+    selectedParts = selectedParts.filter((p) => p !== name);
+  }
+
+  function onSelectIteration(n: number | null) {
+    viewing = n;
   }
 
   function onCancel() {
@@ -155,7 +181,39 @@
   {:else}
     <Stepper {phase} {approved} {onApprove} {onAdvance} {onBack} />
     <div class="body">
-      <Chat messages={conversation} {streaming} {toolCalls} {busy} {onSend} {onCancel} />
+      <div class="left">
+        <Viewer
+          {projectId}
+          {iterations}
+          {viewing}
+          {selectedParts}
+          onPartSelected={onPartSelected}
+          onPartDeselected={onRemovePart}
+        />
+        <Timeline {iterations} {viewing} onSelect={onSelectIteration} />
+      </div>
+      <div class="right">
+        <Chat
+          messages={conversation}
+          {streaming}
+          {toolCalls}
+          {busy}
+          {selectedParts}
+          {onSend}
+          {onCancel}
+          {onRemovePart}
+        />
+        <div class="spec-area">
+          <button class="spec-toggle" onclick={() => (specOpen = !specOpen)}>
+            {specOpen ? '▾' : '▸'} Spec
+          </button>
+          {#if specOpen}
+            <div class="spec-content">
+              <pre>{spec ?? 'No spec yet'}</pre>
+            </div>
+          {/if}
+        </div>
+      </div>
     </div>
   {/if}
 </main>
@@ -172,10 +230,65 @@
     flex: 1;
     min-height: 0;
     display: flex;
+    overflow: hidden;
   }
 
-  .body :global(.chat) {
+  .left {
+    flex: 0 0 70%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .left :global(.viewer) {
     flex: 1;
+    min-height: 0;
+  }
+
+  .right {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border, #333);
+  }
+
+  .right :global(.chat) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .spec-area {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border, #333);
+    max-height: 40%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .spec-toggle {
+    font: inherit;
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    background: var(--button-bg, #2b2d31);
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .spec-content {
+    overflow-y: auto;
+    padding: 0.5rem 0.75rem;
+    min-height: 0;
+  }
+
+  .spec-content pre {
+    white-space: pre-wrap;
+    margin: 0;
+    font-size: 0.85rem;
   }
 
   .error-banner {
