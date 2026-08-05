@@ -2,98 +2,47 @@
 //!
 //! Each phase in the pipeline (spec, decompose, component, assembly, refinement)
 //! sends Claude a different system prompt and a structured user message.
-//! This module handles both: locating the right system prompt file and
-//! building the user message for each phase.
+//! The prompt files are embedded into the binary via rust-embed (the
+//! `debug-embed` feature makes debug builds embed too), so the installed
+//! `smidr` works from any working directory.
 
-/// Locate `prompts/<phase_name>.md`.
-///
-/// Walks up from cwd and from the binary directory, looking for a
-/// `prompts/` directory that contains `<phase_name>.md`.  This mirrors
-/// the logic used by `find_system_prompt` in `claude.rs` but accepts any
-/// phase filename.
+/// The `prompts/` directory, embedded at compile time: `<phase>.md` system
+/// prompts at the top level plus `knowledge/*.md` reference material.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "prompts"]
+struct Prompts;
+
+/// Load the embedded `prompts/<phase_name>.md` system prompt.
 pub fn load_phase_system_prompt(phase_name: &str) -> Result<String, String> {
     let filename = format!("{phase_name}.md");
-
-    let starts: Vec<std::path::PathBuf> = [
-        std::env::current_dir().ok(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf())),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    for start in &starts {
-        let mut dir = start.as_path();
-        loop {
-            let candidate = dir.join("prompts").join(&filename);
-            if candidate.exists() {
-                return std::fs::read_to_string(&candidate)
-                    .map_err(|e| format!("Failed to read {}: {e}", candidate.display()));
-            }
-            match dir.parent() {
-                Some(parent) => dir = parent,
-                None => break,
-            }
-        }
-    }
-
-    Err(format!(
-        "prompts/{filename} not found. Run from within the Smidr project."
-    ))
+    let file = Prompts::get(&filename)
+        .ok_or_else(|| format!("embedded prompt {filename} missing — rebuild smidr"))?;
+    String::from_utf8(file.data.into_owned())
+        .map_err(|e| format!("embedded prompt {filename} is not valid UTF-8: {e}"))
 }
 
-/// Load all engineering knowledge files from `prompts/knowledge/`.
-///
-/// Returns a combined string of all `.md` files in the knowledge directory,
-/// suitable for appending to build-phase system prompts.
+/// Combined engineering knowledge from the embedded `prompts/knowledge/*.md`
+/// files (sorted by filename), suitable for appending to build-phase system
+/// prompts. Empty string if there are none.
 pub fn load_engineering_knowledge() -> String {
-    let starts: Vec<std::path::PathBuf> = [
-        std::env::current_dir().ok(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf())),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let mut names: Vec<_> = Prompts::iter()
+        .filter(|p| p.starts_with("knowledge/") && p.ends_with(".md"))
+        .collect();
+    names.sort();
 
-    for start in &starts {
-        let mut dir = start.as_path();
-        loop {
-            let knowledge_dir = dir.join("prompts").join("knowledge");
-            if knowledge_dir.is_dir() {
-                let mut sections = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
-                    let mut files: Vec<_> = entries
-                        .flatten()
-                        .filter(|e| {
-                            e.path().extension().map_or(false, |ext| ext == "md")
-                        })
-                        .collect();
-                    files.sort_by_key(|e| e.file_name());
-                    for entry in files {
-                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                            sections.push(content);
-                        }
-                    }
-                }
-                if !sections.is_empty() {
-                    return format!(
-                        "\n\n---\n\n# Engineering Knowledge Base\n\n{}\n",
-                        sections.join("\n\n---\n\n")
-                    );
-                }
-                return String::new();
-            }
-            match dir.parent() {
-                Some(parent) => dir = parent,
-                None => break,
-            }
-        }
+    let sections: Vec<String> = names
+        .iter()
+        .filter_map(|n| Prompts::get(n))
+        .filter_map(|f| String::from_utf8(f.data.into_owned()).ok())
+        .collect();
+
+    if sections.is_empty() {
+        return String::new();
     }
-    String::new()
+    format!(
+        "\n\n---\n\n# Engineering Knowledge Base\n\n{}\n",
+        sections.join("\n\n---\n\n")
+    )
 }
 
 #[cfg(test)]
@@ -105,5 +54,11 @@ mod tests {
         let prompt = load_phase_system_prompt("spec");
         assert!(prompt.is_ok());
         assert!(prompt.unwrap().contains("ask_question"));
+    }
+
+    #[test]
+    fn test_knowledge_is_embedded() {
+        let knowledge = load_engineering_knowledge();
+        assert!(knowledge.contains("Engineering Knowledge Base"));
     }
 }

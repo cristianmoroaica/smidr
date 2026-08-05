@@ -269,6 +269,13 @@ fn find_mcp_server() -> Result<PathBuf, String> {
             if !dir.pop() { break; }
         }
     }
+    // Installed-binary fallback: the repo this binary was compiled from.
+    // The Python side (mcp/server.py + .venv-cadquery) can't be embedded,
+    // so an installed smidr keeps using the checkout it was built at.
+    let built_from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("mcp/server.py");
+    if built_from.exists() {
+        return Ok(built_from);
+    }
     Err("mcp/server.py not found".to_string())
 }
 
