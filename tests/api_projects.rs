@@ -139,7 +139,7 @@ fn post_project_trims_name_and_returned_id_matches_delete_id() {
 fn delete_project_rejects_path_traversal_id() {
     let server = common::spawn();
 
-    // Create a sibling directory of ~/MiModel that must survive untouched.
+    // Create a sibling directory of ~/Smidr that must survive untouched.
     let precious = server.home.path().join("precious");
     std::fs::create_dir_all(&precious).unwrap();
     std::fs::write(precious.join("secret.txt"), b"do not delete me").unwrap();
@@ -156,6 +156,6 @@ fn delete_project_rejects_path_traversal_id() {
 
     assert!(
         precious.join("secret.txt").exists(),
-        "path traversal must not delete a directory outside ~/MiModel"
+        "path traversal must not delete a directory outside ~/Smidr"
     );
 }

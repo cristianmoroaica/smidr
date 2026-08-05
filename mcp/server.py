@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MiModel MCP server — per-phase tool definitions for Claude CLI.
+"""Smidr MCP server — per-phase tool definitions for Claude CLI.
 
 Implements JSON-RPC over stdin/stdout (MCP protocol). Each phase exposes
 only the tools appropriate for that phase. Writing a .py file to a build
@@ -98,8 +98,8 @@ import urllib.request
 import urllib.error
 
 def _references_dir():
-    """Return the global references directory: ~/MiModel/references/"""
-    return os.path.join(os.path.expanduser("~"), "MiModel", "references")
+    """Return the global references directory: ~/Smidr/references/"""
+    return os.path.join(os.path.expanduser("~"), "Smidr", "references")
 
 FETCH_URL_TOOL = {
     "name": "fetch_url",
@@ -819,7 +819,7 @@ def scan_model(session_dir):
     if not f3d_bin:
         return [{"type": "text", "text": "f3d not found. Install f3d for model scanning."}]
 
-    tmp_dir = tempfile.mkdtemp(prefix="mimodel_scan_")
+    tmp_dir = tempfile.mkdtemp(prefix="smidr_scan_")
     content = [{"type": "text", "text": "Engineering views (coordinate system: +X=right, +Y=forward, +Z=up):"}]
     errors = []
 
@@ -1007,7 +1007,7 @@ def handle_tool_call(name, arguments, session_dir):
     if name == "list_references":
         ref_dir = _references_dir()
         if not os.path.exists(ref_dir):
-            return [{"type": "text", "text": "No reference library found at ~/MiModel/references/"}]
+            return [{"type": "text", "text": "No reference library found at ~/Smidr/references/"}]
         refs = []
         for f in sorted(os.listdir(ref_dir)):
             if f.endswith(".toml"):
@@ -1042,7 +1042,7 @@ def handle_tool_call(name, arguments, session_dir):
         query = arguments.get("query", "").lower().replace(" ", "_")
         ref_dir = _references_dir()
         if not os.path.exists(ref_dir):
-            return [{"type": "text", "text": "No reference library found at ~/MiModel/references/"}]
+            return [{"type": "text", "text": "No reference library found at ~/Smidr/references/"}]
         exact = os.path.join(ref_dir, query + ".toml")
         if os.path.exists(exact):
             with open(exact) as f:
@@ -1064,7 +1064,7 @@ def handle_tool_call(name, arguments, session_dir):
             return [{"type": "text", "text": "URL must start with http:// or https://"}]
         try:
             req = urllib.request.Request(url, headers={
-                "User-Agent": "MiModel/0.3 (CAD reference checker)",
+                "User-Agent": "Smidr/0.3 (CAD reference checker)",
                 "Accept": "text/html, text/plain, application/json, */*",
             })
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1231,7 +1231,7 @@ def handle_tool_call(name, arguments, session_dir):
 # ── Main loop ──
 
 def main():
-    parser = argparse.ArgumentParser(description="MiModel MCP server")
+    parser = argparse.ArgumentParser(description="Smidr MCP server")
     parser.add_argument("--phase", required=True, choices=PHASE_TOOLS.keys())
     parser.add_argument("--session-dir", default=None)
     args = parser.parse_args()
@@ -1257,7 +1257,7 @@ def main():
             send_response(id, {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "mimodel", "version": "0.2.0"}
+                "serverInfo": {"name": "smidr", "version": "0.2.0"}
             })
         elif method == "notifications/initialized":
             pass

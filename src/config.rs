@@ -60,9 +60,9 @@ impl Config {
     }
 
     /// Resolve the Python interpreter to use for ai3d-cad.
-    /// Priority: MIMODEL_PYTHON env var > .venv-cadquery/bin/python > python
+    /// Priority: SMIDR_PYTHON env var > .venv-cadquery/bin/python > python
     pub fn python_path(&self) -> String {
-        if let Ok(p) = std::env::var("MIMODEL_PYTHON") {
+        if let Ok(p) = std::env::var("SMIDR_PYTHON") {
             return p;
         }
         // Auto-detect project venv (relative to current dir or binary dir)
@@ -86,7 +86,7 @@ impl Config {
     }
 
     fn config_path() -> PathBuf {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("mimodel").join("config.toml")
+        dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("smidr").join("config.toml")
     }
 }
 

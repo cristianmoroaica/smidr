@@ -1,4 +1,6 @@
-# MiModel
+# Smiðr
+
+Describe the part. Smiðr forges it.
 
 An interactive terminal UI for generating functional 3D models from natural language. Describe what you need, Claude orchestrates a multi-phase pipeline through MCP tools, and you get a printable STL with live 3D preview.
 
@@ -29,7 +31,7 @@ Built for resin 3D printing workflows where you want to go from idea to STL with
 
 ## How It Works
 
-MiModel uses a **5-phase pipeline**, each with dedicated MCP tools that constrain Claude to the right task:
+Smidr uses a **5-phase pipeline**, each with dedicated MCP tools that constrain Claude to the right task:
 
 1. **Spec** — Describe your part. Claude asks clarifying questions and records dimensions, constraints, and features. A `goal.md` verification checklist is generated automatically.
 2. **Decompose** — Claude proposes a component tree (base shape + boolean cuts/unions). You approve or adjust.
@@ -101,15 +103,15 @@ After every build, Claude:
 ### 1. Clone and build
 
 ```bash
-git clone <repo-url> MiModel
-cd MiModel
+git clone <repo-url> smidr
+cd smidr
 cargo build --release
 ```
 
-The binary is at `target/release/mimodel`. Copy it somewhere in your `$PATH`:
+The binary is at `target/release/smidr`. Copy it somewhere in your `$PATH`:
 
 ```bash
-cp target/release/mimodel ~/.local/bin/
+cp target/release/smidr ~/.local/bin/
 ```
 
 ### 2. Python setup
@@ -136,10 +138,10 @@ python -m ai3d_cad --version
 # ai3d-cad 0.1.0 (protocol 1)
 ```
 
-MiModel auto-detects the `.venv-cadquery` directory. You can also set the Python path explicitly:
+Smidr auto-detects the `.venv-cadquery` directory. You can also set the Python path explicitly:
 
 ```bash
-export MIMODEL_PYTHON=/path/to/python3.11
+export SMIDR_PYTHON=/path/to/python3.11
 ```
 
 ### 3. Claude CLI
@@ -150,12 +152,12 @@ Make sure `claude` is installed and authenticated:
 claude --version
 ```
 
-MiModel spawns `claude` with `--dangerously-skip-permissions` and `--strict-mcp-config` for non-interactive use.
+Smidr spawns `claude` with `--dangerously-skip-permissions` and `--strict-mcp-config` for non-interactive use.
 
 ## Usage
 
 ```bash
-mimodel
+smidr
 ```
 
 Create or select a project, then start describing your part:
@@ -253,10 +255,10 @@ The system analyzes geometry (bounding box, faces, holes), generates a starter `
 
 ## Session Structure
 
-All projects live under `~/MiModel/`:
+All projects live under `~/Smidr/`:
 
 ```
-~/MiModel/
+~/Smidr/
 ├── NEMA23 mount/
 │   ├── project.json
 │   ├── clamp_mount.stl              # Saved part (Ctrl+W)
@@ -332,7 +334,7 @@ All projects live under `~/MiModel/`:
 
 ## Configuration
 
-Optional config file at `~/.config/mimodel/config.toml`:
+Optional config file at `~/.config/smidr/config.toml`:
 
 ```toml
 [claude]
@@ -366,7 +368,7 @@ src/
 │   ├── component_tree.rs# Dependency tree visualization
 │   └── status_bar.rs    # Usage stats overlay
 ├── storage/
-│   ├── project.rs       # Project CRUD (~/MiModel/)
+│   ├── project.rs       # Project CRUD (~/Smidr/)
 │   └── session.rs       # PhaseSessionData serialization
 ├── phase.rs             # Phase enum (Spec→Decompose→Component→Assembly→Refinement)
 ├── model_session.rs     # PhaseSession runtime state
@@ -376,7 +378,7 @@ src/
 ├── render.rs            # Phase indicator, legend bar
 ├── parser.rs            # Code block extraction from responses
 ├── spec.rs              # ModelSpec TOML serialization
-├── reference.rs         # Component reference library (~/MiModel/references/)
+├── reference.rs         # Component reference library (~/Smidr/references/)
 ├── reference_detect.rs  # Auto-detect /ref markers in conversation
 ├── image.rs             # Clipboard paste, file path detection
 ├── python.rs            # ai3d-cad subprocess runner

@@ -9,7 +9,7 @@ use serde_json::Value;
 fn get_api_refs_returns_seeded_m3_shcs() {
     let server = common::spawn();
 
-    // `AppCore` seeds ~/MiModel/references on construction, but construction
+    // `AppCore` seeds ~/Smidr/references on construction, but construction
     // is lazy — it happens the first time a project's `AppCore` is created,
     // which is on the first WebSocket connect for that project (see
     // `ServerState::core_for`), not on `POST /api/projects`. Create a

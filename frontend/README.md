@@ -1,6 +1,6 @@
-# mimodel web frontend
+# Smiðr web frontend
 
-Vite + Svelte 5 + TypeScript UI for the `mimodel --web` server. Talks to the
+Vite + Svelte 5 + TypeScript UI for the `smidr` server. Talks to the
 Rust backend over `GET/POST/DELETE /api/projects` and the `/api/session`
 WebSocket protocol defined in `src/lib/ws.ts`.
 
@@ -35,7 +35,7 @@ npm run dev
 In a separate terminal, start the backend on the port the proxy expects:
 
 ```sh
-mimodel --web --port 8787
+smidr --port 8787
 ```
 
 Then open the URL Vite prints (typically http://localhost:5173).

@@ -26,7 +26,7 @@ use std::io::{IsTerminal, Read, Write};
 
 /// CLI arguments.
 #[derive(Debug, Parser)]
-#[command(name = "mimodel")]
+#[command(name = "smidr")]
 struct Cli {
     /// Deprecated no-op: the server is now the only mode.
     #[arg(long, hide = true)]

@@ -984,29 +984,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mimodel"
-version = "0.3.0"
-dependencies = [
- "axum",
- "chrono",
- "clap",
- "dirs",
- "futures-util",
- "libc",
- "regex",
- "rust-embed",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tungstenite 0.30.0",
- "ureq",
- "wait-timeout",
- "webbrowser",
-]
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1594,6 +1571,29 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "smidr"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures-util",
+ "libc",
+ "regex",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tungstenite 0.30.0",
+ "ureq",
+ "wait-timeout",
+ "webbrowser",
+]
 
 [[package]]
 name = "socket2"

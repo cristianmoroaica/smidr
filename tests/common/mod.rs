@@ -1,4 +1,4 @@
-//! Shared black-box test harness: spawns the built `mimodel` binary (the
+//! Shared black-box test harness: spawns the built `smidr` binary (the
 //! server is the binary's only mode now) against a sandboxed HOME, and
 //! exposes its base URL.
 
@@ -60,7 +60,7 @@ pub fn spawn_with_web() -> Server {
 fn spawn_inner(extra_args: &[&str], extra: &[(&str, &str)], stdin_text: Option<&str>) -> Server {
     let home = tempfile::TempDir::new().expect("tempdir");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimodel"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_smidr"));
     cmd.args(["--port", "0", "--no-browser"])
         .args(extra_args)
         .env("HOME", home.path())
@@ -71,7 +71,7 @@ fn spawn_inner(extra_args: &[&str], extra: &[(&str, &str)], stdin_text: Option<&
         cmd.env(k, v);
     }
 
-    let mut child = cmd.spawn().expect("failed to spawn mimodel");
+    let mut child = cmd.spawn().expect("failed to spawn smidr");
 
     if let Some(text) = stdin_text {
         use std::io::Write;

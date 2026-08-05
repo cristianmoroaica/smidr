@@ -40,7 +40,7 @@ pub fn load_phase_system_prompt(phase_name: &str) -> Result<String, String> {
     }
 
     Err(format!(
-        "prompts/{filename} not found. Run from within the MiModel project."
+        "prompts/{filename} not found. Run from within the Smidr project."
     ))
 }
 

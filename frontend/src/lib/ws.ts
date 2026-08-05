@@ -1,4 +1,4 @@
-// Typed client for the mimodel session WebSocket protocol.
+// Typed client for the smidr session WebSocket protocol.
 // Wire shapes are pinned by the plan's Task 2.2 Interfaces block — keep in
 // sync with src/server/ws.rs exactly.
 

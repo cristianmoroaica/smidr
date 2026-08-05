@@ -21,7 +21,7 @@ echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"hello fr
 /// a tool_result whose text contains BUILD_COMPONENT lines for two
 /// components (one done, one failed), then the usual result event.
 const FAKE_CLAUDE_BUILD_PROGRESS_SCRIPT: &str = r#"#!/bin/sh
-echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__mimodel__write_file","input":{"path":"components/lid/code.py"}}]}}'
+echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__smidr__write_file","input":{"path":"components/lid/code.py"}}]}}'
 echo '{"type":"user","session_id":"fake-1","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"File written: components/lid/code.py\nBuild successful! Dimensions: 1x2x3mm.\nBUILD_COMPONENT: lid done\nBUILD_COMPONENT: base failed"}]}]}}'
 echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"build done"}'
 "#;
@@ -265,7 +265,7 @@ fn unknown_project_gets_error_not_a_core() {
     );
 }
 
-/// Piped stdin at startup (the `git diff | mimodel` briefing flow) must
+/// Piped stdin at startup (the `git diff | smidr` briefing flow) must
 /// create a project from the briefing content (alongside the default
 /// "Untitled" project `AppCore::new` always seeds), and the FIRST WebSocket
 /// connection to that briefing project must auto-submit the synthetic

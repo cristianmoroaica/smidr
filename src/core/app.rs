@@ -89,7 +89,7 @@ impl AppCore {
         let build_timeout = config.defaults.build_timeout;
         let mut session = SessionManager::new(build_timeout, python_path.clone());
 
-        // Ensure ~/MiModel/ exists and scan for projects (this also seeds a
+        // Ensure ~/Smidr/ exists and scan for projects (this also seeds a
         // default "Untitled" project on first run, briefing or not).
         let _ = storage::project::ensure_root();
         seed_references();
@@ -1036,7 +1036,7 @@ impl AppCore {
 
     /// Dispatch an MCP tool call from Claude's stream to the appropriate handler.
     fn handle_tool_call(&mut self, tool: &ToolCall) {
-        let name = tool.name.strip_prefix("mcp__mimodel__").unwrap_or(&tool.name);
+        let name = tool.name.strip_prefix("mcp__smidr__").unwrap_or(&tool.name);
 
         match name {
             "ask_question" | "ask_clarification" => {
@@ -1148,7 +1148,7 @@ impl AppCore {
 
         let tool_calls = self.claude.drain_tool_calls();
         for tc in tool_calls {
-            let name = tc.name.strip_prefix("mcp__mimodel__").unwrap_or(&tc.name).to_string();
+            let name = tc.name.strip_prefix("mcp__smidr__").unwrap_or(&tc.name).to_string();
             let detail = Self::describe_tool_call(&tc);
             self.handle_tool_call(&tc);
             events.extend(self.pending_events.drain(..));
@@ -1192,7 +1192,7 @@ impl AppCore {
     }
 }
 
-/// Seed ~/MiModel/references/ with common components on first run.
+/// Seed ~/Smidr/references/ with common components on first run.
 fn seed_references() {
     let dir = reference::references_dir();
     if dir.exists() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
@@ -1251,7 +1251,7 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         let result = f();
         // Restore rather than unset: an unset HOME makes `dirs::home_dir()`
-        // fall back to the passwd entry, i.e. the developer's real ~/MiModel.
+        // fall back to the passwd entry, i.e. the developer's real ~/Smidr.
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),

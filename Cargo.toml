@@ -1,12 +1,12 @@
 [package]
-name = "mimodel"
+name = "smidr"
 version = "0.3.0"
 edition = "2021"
 description = "Interactive 3D model generator using Claude CLI"
 build = "build.rs"
 
 [[bin]]
-name = "mimodel"
+name = "smidr"
 path = "src/main.rs"
 
 [dependencies]

@@ -186,6 +186,10 @@
   {#if !projectId}
     <div class="picker">
       <div class="picker-card">
+        <div class="brand">
+          <div class="brand-mark">Smiðr</div>
+          <p class="tagline">Describe the part. Smiðr forges it.</p>
+        </div>
         {#if loadingProjects}
           <p>Loading projects...</p>
         {:else if projectChoices.length > 0}
@@ -203,7 +207,12 @@
       </div>
     </div>
   {:else}
-    <Stepper {phase} {approved} {onApprove} {onAdvance} {onBack} />
+    <header class="appbar">
+      <span class="wordmark">Smiðr</span>
+      <div class="appbar-stepper">
+        <Stepper {phase} {approved} {onApprove} {onAdvance} {onBack} />
+      </div>
+    </header>
     <div class="body">
       <div class="left">
         <Viewer
@@ -324,6 +333,45 @@
   .picker-card {
     max-width: 34rem;
     width: 100%;
+  }
+
+  .appbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--bg-app);
+    border-bottom: 1px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  .appbar-stepper {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .appbar-stepper :global(.stepper) {
+    border-bottom: none;
+    background: transparent;
+  }
+
+  .wordmark {
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    color: var(--text);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .brand-mark {
+    font-size: 1.75rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    color: var(--text);
+  }
+
+  .tagline {
+    color: var(--text-secondary);
+    margin: 0.25rem 0 1.75rem;
   }
 
   .picker h2 {

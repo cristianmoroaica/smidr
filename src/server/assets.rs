@@ -15,12 +15,12 @@ use axum::response::{IntoResponse, Response};
 /// embedded (default build, no `embed-frontend` feature).
 pub const NOT_BUILT_HTML: &str = r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>mimodel</title></head>
+<head><meta charset="utf-8"><title>Smiðr</title></head>
 <body>
-<h1>Frontend not built</h1>
+<h1>Smiðr — frontend not built</h1>
 <p>The web UI has not been built into this binary. Build it first:</p>
 <pre>cd frontend && npm install && npm run build</pre>
-<p>Then rebuild mimodel with <code>--features embed-frontend</code>.</p>
+<p>Then rebuild smidr with <code>--features embed-frontend</code>.</p>
 </body>
 </html>
 "#;

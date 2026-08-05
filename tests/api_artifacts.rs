@@ -54,12 +54,12 @@ fn force_session_creation(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
     assert_eq!(reply["type"], "phase_state");
 }
 
-/// Walk `<HOME>/MiModel/<project>` looking for the session directory
+/// Walk `<HOME>/Smidr/<project>` looking for the session directory
 /// `force_session_creation` (via `approve_phase`) produced — the first
 /// subdirectory containing a `session.json`, found via recursive search
 /// since the exact nesting is an implementation detail.
 fn find_session_dir(home: &std::path::Path, project: &str) -> PathBuf {
-    let project_root = home.join("MiModel").join(project);
+    let project_root = home.join("Smidr").join(project);
     fn search(dir: &std::path::Path) -> Option<PathBuf> {
         let entries = std::fs::read_dir(dir).ok()?;
         for entry in entries.flatten() {

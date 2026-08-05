@@ -23,25 +23,41 @@ pub struct Project {
     pub sessions: Vec<SessionInfo>, // session directory names
 }
 
-/// Get the root storage directory: ~/MiModel/
+/// Get the root storage directory: ~/Smidr/
 pub fn root_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Smidr")
+}
+
+/// The pre-rebrand storage root (~/MiModel/), kept only so `ensure_root` can
+/// perform a one-shot migration to ~/Smidr/ for existing installs.
+fn legacy_root_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("MiModel")
 }
 
-/// Ensure ~/MiModel/ exists. Creates with a default "Untitled" project if missing.
+/// Ensure ~/Smidr/ exists. Creates with a default "Untitled" project if missing.
+/// If a pre-rebrand ~/MiModel/ exists and ~/Smidr/ does not, migrates it in place.
 pub fn ensure_root() -> Result<PathBuf, String> {
     let root = root_dir();
     if !root.exists() {
+        let legacy = legacy_root_dir();
+        if legacy.exists() {
+            std::fs::rename(&legacy, &root)
+                .map_err(|e| format!("Failed to migrate ~/MiModel to ~/Smidr: {e}"))?;
+        }
+    }
+    if !root.exists() {
         std::fs::create_dir_all(&root)
-            .map_err(|e| format!("Failed to create ~/MiModel/: {e}"))?;
+            .map_err(|e| format!("Failed to create ~/Smidr/: {e}"))?;
         create_project("Untitled", "")?;
     }
     Ok(root)
 }
 
-/// List all projects in ~/MiModel/.
+/// List all projects in ~/Smidr/.
 pub fn list_projects() -> Result<Vec<Project>, String> {
     let root = root_dir();
     if !root.exists() {
@@ -50,7 +66,7 @@ pub fn list_projects() -> Result<Vec<Project>, String> {
 
     let mut projects = Vec::new();
     let entries = std::fs::read_dir(&root)
-        .map_err(|e| format!("Failed to read ~/MiModel/: {e}"))?;
+        .map_err(|e| format!("Failed to read ~/Smidr/: {e}"))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -142,7 +158,7 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         f();
         // Restore rather than unset: an unset HOME makes `dirs::home_dir()`
-        // fall back to the passwd entry, i.e. the developer's real ~/MiModel.
+        // fall back to the passwd entry, i.e. the developer's real ~/Smidr.
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
@@ -176,6 +192,41 @@ mod tests {
             delete_project("ToDelete").unwrap();
             let projects = list_projects().unwrap();
             assert!(!projects.iter().any(|p| p.meta.name == "ToDelete"));
+        });
+    }
+
+    #[test]
+    fn test_ensure_root_migrates_legacy_mimodel_dir() {
+        with_test_root(|| {
+            let home = dirs::home_dir().unwrap();
+            std::fs::create_dir_all(home.join("MiModel/SomeProj")).unwrap();
+            std::fs::write(
+                home.join("MiModel/SomeProj/project.json"),
+                r#"{"name":"SomeProj","created":"","description":""}"#,
+            ).unwrap();
+
+            ensure_root().unwrap();
+
+            assert!(home.join("Smidr/SomeProj/project.json").exists());
+            assert!(!home.join("MiModel").exists());
+            assert!(!home.join("Smidr/Untitled").exists());
+        });
+    }
+
+    #[test]
+    fn test_ensure_root_is_idempotent_after_migration() {
+        with_test_root(|| {
+            let home = dirs::home_dir().unwrap();
+            std::fs::create_dir_all(home.join("MiModel/SomeProj")).unwrap();
+            std::fs::write(
+                home.join("MiModel/SomeProj/project.json"),
+                r#"{"name":"SomeProj","created":"","description":""}"#,
+            ).unwrap();
+
+            ensure_root().unwrap();
+            ensure_root().unwrap();
+
+            assert!(home.join("Smidr/SomeProj/project.json").exists());
         });
     }
 

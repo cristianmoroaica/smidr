@@ -239,13 +239,13 @@ pub fn generate_mcp_config(phase_name: &str, session_dir: Option<&Path>) -> Resu
     }
     let config = serde_json::json!({
         "mcpServers": {
-            "mimodel": {
+            "smidr": {
                 "command": python_cmd,
                 "args": args
             }
         }
     });
-    let tmp_path = std::env::temp_dir().join(format!("mimodel_mcp_{}.json", std::process::id()));
+    let tmp_path = std::env::temp_dir().join(format!("smidr_mcp_{}.json", std::process::id()));
     std::fs::write(&tmp_path, config.to_string())
         .map_err(|e| format!("Failed to write MCP config: {e}"))?;
     Ok(tmp_path)

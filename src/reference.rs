@@ -66,7 +66,7 @@ pub fn slug_from_name(name: &str) -> String {
     filtered.split_whitespace().collect::<Vec<_>>().join("_")
 }
 
-/// Returns the global references directory: ~/MiModel/references/
+/// Returns the global references directory: ~/Smidr/references/
 pub fn references_dir() -> PathBuf {
     crate::storage::project::root_dir().join("references")
 }
