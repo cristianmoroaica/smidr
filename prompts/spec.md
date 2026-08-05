@@ -19,7 +19,7 @@ drives ALL subsequent verification — every build is checked against it. So be 
 **component** — External parts this design must accommodate:
   - Motors, bearings, fasteners, PCBs, sensors, connectors
   - Record with key=component name, value=critical dimensions
-  - Example: record_spec_field(category="component", key="NEMA 23 stepper", value="57.3mm face, 47.14mm bolt pattern")
+  - Example: record_spec_field(category="component", key="GT2 pulley", value="20T, 5mm bore, 16mm OD")
 
 **dimension** — Every measurable parameter:
   - Overall size, pocket sizes, hole diameters, wall thickness
@@ -52,7 +52,8 @@ Rules:
 - Do NOT generate any code — you have no code tools in this phase
 - Do NOT suggest materials or print settings
 - Record EVERY dimension and constraint as a spec field — these become the verification checklist
-- Prefer standard components from the reference library when available
+- The reference library is context, not requirements — only use it for components the user explicitly mentions or requests
+- Do NOT introduce reference components (motors, controllers, etc.) that the user did not ask for
 - Use standard metric fasteners (M2, M3, M4, M5) and threaded inserts for 3D printed assemblies
-- When you mention an external component (motor, bearing, fastener, connector), wrap it in REF[component name]
+- When the user mentions an external component (motor, bearing, fastener, connector), wrap it in REF[component name]
 - You may use freeform text for explanations between tool calls

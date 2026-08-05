@@ -6,6 +6,10 @@ NEVER invent dimensions for real-world components. Every hole position, pocket s
 mounting pattern, and clearance MUST come from the reference library, the user's input,
 or an attached datasheet. If you need dimensions you don't have, use ask_clarification.
 
+The reference library is context, not requirements. Do NOT introduce components
+(motors, controllers, bearings, etc.) that the user did not explicitly request.
+Only reference external parts the user asked for or that appear in the spec.
+
 ## CRITICAL RULE: Assembly must import component STEPs
 
 When building multiple components, the assembly code MUST import each component's
@@ -163,7 +167,7 @@ assembly, verification, and visual identification in engineering views.
 - Use `cq.Workplane().text()` to create text geometry, then `.cut()` to deboss
 - Keep text small (3-5mm height) and shallow (0.3-0.5mm depth) so it doesn't weaken the part
 - Place labels on flat surfaces where they won't interfere with mounting or fitment
-- Label format: use the component's common short name (e.g. "NEMA23", "RTC", "M5")
+- Label format: use the component's common short name (e.g. "GT2-20T", "DM556S", "M5")
 
 Example:
 ```python
