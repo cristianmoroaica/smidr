@@ -1,75 +1,74 @@
 # Codemap: AI3D (MiModel)
-commit: 3bd2345 | generated: 2026-08-05 | source: jcodemunch
+commit: 35b018b | generated: 2026-08-05 | source: jcodemunch
 
 ## Purpose
-Ratatui TUI (`mimodel`) orchestrating the Claude CLI through a 3-phase pipeline (Spec→Build→Refine) to generate CadQuery/OpenSCAD 3D models from natural language, verified against an auto-generated `goal.md` checklist. Also runnable as an axum web server (`--web`) serving a Svelte chat UI over the same `AppCore` via REST + WebSocket.
-Python side (`ai3d_cad` package + `mcp/server.py`) is the MCP tool server the spawned Claude CLI subprocess calls to build/assemble/analyze STL/STEP geometry.
+`mimodel` is now a web-only binary: an axum HTTP+WebSocket server (routes.rs projects/refs API, ws.rs session channel, artifacts.rs GLB downloads, assets.rs embedded static files) fronting a Svelte chat/viewer UI, driving Claude CLI through a 3-phase pipeline (Spec→Build→Refine) to generate CadQuery/OpenSCAD 3D models, verified against an auto-generated `goal.md` checklist.
+Python side (`ai3d_cad` package incl. `glb_export.py` + `mcp/server.py`) is the MCP tool server the spawned Claude CLI subprocess calls to build/assemble/analyze/export geometry.
 
 ## Layout
-- `src/` — Rust binary (`mimodel`), 38 files, ~12.7k LOC. Entry: `src/main.rs` (682 lines) — CLI arg parsing (`Cli`: `--web`/`--port`/`--no-browser`) then either TUI (default) or `server::run_blocking`.
-  - `src/core/app.rs` (2337 lines) — `AppCore`: all non-rendering state/logic (phase state + server-authoritative approval gate, session mgmt, Claude CLI interaction, refs, background-result processing), shared by both TUI and web server. `src/core/mod.rs` re-exports it plus `BackgroundResult`.
-  - `src/server/` (new) — axum HTTP+WS API: `mod.rs` (`ServerState`/`SharedState` — `HashMap<project_id, AppCore>`, `run_blocking`), `routes.rs` (`/api/projects` CRUD, name validation, path-traversal guard), `ws.rs` (`/api/session` WS: pinned client→server `prompt`/`approve_phase`/`advance`/`go_back`/`cancel_stream` protocol; server pushes phase/build/stream events), `assets.rs` (rust-embed static-file serving behind `embed-frontend` Cargo feature, `Assets` struct + `static_handler` fallback).
-  - `src/tui/` — ratatui widgets/panes: `conversation.rs`, `spec_panel.rs`, `right_panel.rs`, `model_panel.rs`, `project_tree.rs`, `input_bar.rs`, `layout.rs`, `status_bar.rs`.
+- `src/` — Rust binary (`mimodel`), 26 files, ~6.4k LOC. Entry: `src/main.rs` (99 lines) — clap `Cli` (`--port`/`--no-browser`; `--web` kept as a hidden deprecated no-op), reads piped-stdin briefing, then always calls `server::run_blocking`. **TUI is gone**: `src/tui/`, `event_handler.rs`, `render.rs`, `viewer.rs`, `preview.rs`, `stl.rs`, `usage.rs` deleted; `ratatui`/`crossterm` dropped from `Cargo.toml`.
+  - `src/core/app.rs` (1781 lines) — `AppCore`: all app state/logic (phase state + approval gate, session mgmt, Claude CLI interaction, refs, background-result processing). TUI-mirroring accessors (`busy`, `undo`, `usage_stats`, pending-image helpers) were removed with the TUI. `src/core/mod.rs` re-exports it + `BackgroundResult`.
+  - `src/server/` — axum HTTP+WS API, the only front door: `mod.rs` (`ServerState`/`SharedState` = `HashMap<project_id, AppCore>` behind a `Mutex`, `run_blocking`), `routes.rs` (`/api/projects` CRUD + `/api/refs` list), `ws.rs` (`/api/session` WS: `prompt`/`approve_phase`/`advance`/`go_back`/`cancel_stream` in, `snapshot`/`stream_delta`/`tool_call`/`phase_state`/`build_progress`/`error` out; checks `Origin` header via `origin_allowed`), `artifacts.rs` (GET `iteration_<n>.{glb,manifest.json}` per project, `glb_iterations` dir scan), `assets.rs` (rust-embed static files behind `embed-frontend` Cargo feature).
   - `src/storage/` — on-disk project/session persistence (`project.rs`, `session.rs`).
-  - `claude.rs`/`claude_bridge.rs` (CLI subprocess + streaming bridge), `phase_dispatch.rs` (`impl AppCore` — per-phase prompt senders + `try_switch_phase`, now gate-aware), `phase.rs` (3-phase enum: Spec/Build/Refine, legacy Decompose/Component/Assembly/Refinement deserialize aliases), `spec.rs`, `component.rs` (domain models), `parser.rs`, `prompt_builder.rs`, `python.rs` (subprocess into `ai3d_cad`), `session_manager.rs`, `preview.rs`/`render.rs`/`viewer.rs`/`stl.rs` (STL preview + external viewer, TUI-only), `reference.rs`/`reference_detect.rs` (`/ref` library), `usage.rs`, `image.rs`, `event_handler.rs` (`impl App` keybindings, delegates to `AppCore`).
-  - `build.rs` — guards the `embed-frontend` feature against a missing `frontend/dist` build output.
-- `frontend/` (new) — Svelte 5 + TypeScript + Vite chat UI, embedded into the binary via rust-embed when built with `--features embed-frontend`. `src/lib/ws.ts` — typed WS protocol client (mirrors `src/server/ws.rs` message shapes). `src/lib/Chat.svelte` (streamed markdown + collapsible tool calls), `src/lib/Stepper.svelte` (gated phase stepper), `src/App.svelte`, `src/main.ts`.
-- `mcp/server.py` — MCP tool server exposing phase-gated tools to the Claude CLI subprocess (build, assemble, analyze, scan_model, import_step, goal doc generation).
-- `python/src/ai3d_cad/` — CadQuery/OpenSCAD execution engine: `builder.py`, `assembler.py`, `openscad.py`, `paramset.py`, `analyzer.py`.
-- `prompts/` — phase system prompts (`spec.md`, `build.md`, `refine.md`) + `prompts/knowledge/*.md` engineering reference docs injected into prompts.
-- `references/*.toml` — hardware reference specs (screws, inserts) used by `/ref`.
-- `python/tests/`, `tests/{api_projects,api_ws,api_assets,common}.rs` (new — integration tests drive a real server + fake `claude` binary), `src/**` inline `#[cfg(test)]` — colocated unit tests (`src/core/app.rs` alone carries ~40 inline tests, including the new phase-gate suite).
+  - `claude.rs` (390 lines, gained `parse_build_progress_line`)/`claude_bridge.rs` (293 lines, gained `BuildProgress`/`drain_build_progress` channel for `BUILD_COMPONENT:` lines), `phase_dispatch.rs` (`impl AppCore` — per-phase prompt senders + gate-aware `try_switch_phase`), `phase.rs` (3-phase enum, legacy deserialize aliases), `spec.rs`, `component.rs`, `parser.rs`, `prompt_builder.rs`, `python.rs` (subprocess into `ai3d_cad`), `session_manager.rs`, `reference.rs`/`reference_detect.rs` (`/ref` library), `image.rs`. **No** `usage.rs` — Claude usage stats were TUI-only and were removed.
+  - `build.rs` — guards `embed-frontend` against a missing `frontend/dist`.
+- `frontend/` — Svelte 5 + TypeScript + Vite chat UI, embedded via rust-embed when built with `--features embed-frontend`. `src/App.svelte` (325 lines, "Layout A" — the app shell) composes `lib/Viewer.svelte` (981 lines, three.js GLB viewer), `lib/Timeline.svelte` (iteration scrubber), `lib/Chat.svelte` (375 lines, streamed markdown + collapsible tool calls), `lib/SpecPanel.svelte`, `lib/RefPicker.svelte`, `lib/Stepper.svelte` (gated phase stepper). `src/lib/ws.ts::connectSession` — typed WS protocol client mirroring `src/server/ws.rs` message shapes. `src/lib/markdown.ts` — chat markdown rendering helper.
+- `mcp/server.py` (1276 lines) — MCP tool server exposing phase-gated tools to the Claude CLI subprocess (build, assemble, analyze, scan_model, import_step, goal doc generation); emits `BUILD_COMPONENT: <name> <status>` progress lines (parsed by `claude.rs::parse_build_progress_line`) around line 658.
+- `python/src/ai3d_cad/` — CadQuery/OpenSCAD execution engine: `builder.py`, `assembler.py`, `openscad.py`, `paramset.py`, `analyzer.py`, `glb_export.py` (111 lines, new — GLB export for the in-browser three.js viewer, backing `src/server/artifacts.rs`).
+- `prompts/` — phase system prompts (`spec.md`, `build.md`, `refine.md`) + `prompts/knowledge/*.md`.
+- `references/*.toml` — hardware reference specs used by `/ref`.
+- `python/tests/`, `tests/{api_projects,api_ws,api_artifacts,api_assets,api_refs,integration}.rs` + `tests/common/mod.rs` (spawn harness — sandboxes `HOME`, spawns the real binary against a fake `claude`), `src/**` inline `#[cfg(test)]`.
 
 ## Entry points & data flow
-1. `src/main.rs::main` parses `Cli` → `Config::load` → `startup_checks`. If `cli.web`: `server::run_blocking(config, cli.port, on_bound)` (opens browser unless `--no-browser`), else TUI: `App::new` (wraps `AppCore::new`) → `run_event_loop`.
-2. **TUI path** (unchanged shape): `run_event_loop` polls crossterm → `event_handler::handle_key`/`App::submit` → `AppCore::submit_prompt` → `phase_dispatch::{send_spec_prompt, send_build_prompt, send_refine_prompt}` / `try_switch_phase` → `ClaudeBridge::send_phase_prompt` → `claude_bridge::generate_mcp_config` → `claude::send_with_phase_prompt` → `claude::send_prompt` (spawns `claude` CLI, streams stdout).
-3. **Web path**: `server::ws::upgrade` (GET `/api/session?project_id=`) → `handle_socket` → `init_session` (`ServerState::core_for` lazily creates/caches an `AppCore` per project id, `set_phase_gate(true)`, `open_project_by_id`) → loop: `handle_client_message` (dispatches `prompt`→`submit_prompt`, `approve_phase`→`AppCore::approve_phase`, `advance`/`go_back`→`try_switch_phase`, denied with `SwitchDenied::NotApproved` if ungated) and `poll_core_events` (drains `AppCore::poll_events`, serializes via `snapshot_value`/`phase_state_value`/`build_progress_value` to JSON pushed over the socket). REST CRUD via `server::routes::router` (`list_projects`/`create_project`/`delete_project`, `is_valid_project_name` blocks path traversal).
-4. Both paths converge on the same MCP tool loop: Claude CLI subprocess calls back into `mcp/server.py::handle_tool_call`, shelling out to `python -m ai3d_cad` (`builder.build`/`validate`, `assembler.assemble`, `analyzer.info`, `paramset.paramset`) to run CadQuery/OpenSCAD and produce STL/STEP.
-5. TUI: `AppCore::poll_events` drained by `App::handle_core_event`/`sync_from_core` (src/main.rs) into TUI panes. Web: same `poll_events` drained by `ws::poll_core_events` into WS JSON frames consumed by `frontend/src/lib/ws.ts` → `Chat.svelte`/`Stepper.svelte`.
-6. `viewer.rs`/`preview.rs`/`stl.rs` render STL for the TUI only (braille pane + optional external f3d/viewer); 360° goal-verification scans driven from `mcp/server.py::scan_model` in both modes.
+1. `src/main.rs::main` → `Cli::parse` → read piped stdin as `briefing` → `Config::load` → `startup_checks` (`claude::check_claude`, `python::check_python`) → `server::run_blocking(config, port, briefing, on_bound)` (opens browser unless `--no-browser`). There is no other mode.
+2. `run_blocking` builds the axum `Router` (`routes::router` merges `ws::router`, falls back to `assets::static_handler`, adds `artifacts::router`) and serves it; `on_bound` prints the listening URL.
+3. Browser connects `GET /api/session?project=<id>` → `ws::upgrade` (origin-checked) → `ws::handle_socket` → `init_session` (`ServerState::core_for` lazily creates/caches an `AppCore` per project id, `set_phase_gate(true)`, `open_project_by_id`) → loop: `handle_client_message` (`prompt`→`AppCore::submit_prompt`, `approve_phase`→`AppCore::approve_phase`, `advance`/`go_back`→`try_switch_phase`, denied with `SwitchDenied::NotApproved` if ungated, `cancel_stream`→`AppCore::cancel`) and a 50ms-tick `poll_core_events` (drains `AppCore::poll_events` → JSON via `snapshot_value`/`spec_value`/`phase_state_value`/`build_progress_value`).
+4. `AppCore::submit_prompt` routes by `Phase` to `phase_dispatch::{send_spec_prompt, send_build_prompt, send_refine_prompt}` → `ClaudeBridge::send_phase_prompt` → `claude_bridge::generate_mcp_config` → `claude::send_with_phase_prompt` → `claude::send_prompt` (spawns `claude` CLI, streams stdout; `BUILD_COMPONENT:` lines parsed into `BuildProgress` and pushed to the client as `build_progress` events).
+5. Claude CLI calls back into `mcp/server.py::handle_tool_call`, shelling into `python -m ai3d_cad` (`builder.build`/`validate`, `assembler.assemble`, `analyzer.info`, `paramset.paramset`, `glb_export`) to produce STL/STEP/GLB.
+6. Browser fetches rendered geometry via `GET /api/projects/{id}/artifacts/iteration_<n>.glb` (`src/server/artifacts.rs::get_artifact`, iterations enumerated by `glb_iterations`) and renders it in `Viewer.svelte`; `Timeline.svelte` drives which iteration is shown.
 
 ## Commands
-- Build (TUI only): `cargo build --release` (binary `mimodel`).
+- Build (no UI assets): `cargo build --release` (binary `mimodel`; server still runs, `assets::lookup` returns `None`, serves a "not built" page).
 - Build with web UI: `cd frontend && npm install && npm run build` then `cargo build --release --features embed-frontend` (`build.rs` fails fast if `frontend/dist` is missing).
-- Run web mode: `mimodel --web [--port N] [--no-browser]`.
-- Rust tests: `cargo test` (unit + `tests/api_{projects,ws,assets}.rs` integration tests against a fake `claude` binary via `tests/common.rs`).
-- Python env: `python/environment.yml` (conda) or `python/pyproject.toml` (pip); tests via `pytest` from `python/`.
+- Run: `mimodel [--port N] [--no-browser]` (always starts the server; `--web` is accepted but ignored).
+- Rust tests: `cargo test` (unit + `tests/api_{projects,ws,artifacts,assets,refs}.rs`, `tests/integration.rs`, via `tests/common::spawn*`).
+- Python: `python/environment.yml` / `python/pyproject.toml`; tests via `pytest` from `python/`.
 - Frontend dev server: `cd frontend && npm run dev` (Vite).
 - MCP server not run standalone — spawned by `claude_bridge::generate_mcp_config` per phase.
 
 ## Conventions
-- Phase rails enforced in code: 3 phases (Spec/Build/Refine); each exposes only its own MCP tool subset; no auto-advance.
-- Server-authoritative approval gate (new): `AppCore::set_phase_gate(true)` (web sessions only, set in `ws::init_session`) makes `try_switch_phase` require `approve_phase()` for the *current* phase before advancing, else `Err(SwitchDenied::NotApproved)`; gate is off by default (TUI), persisted per-session in `session.json`, old sessions load unapproved.
-- UI/logic split: `AppCore` (src/core/app.rs) owns all non-rendering state, consumed by *both* the TUI (`src/main.rs`, direct field access) and the server (`src/server/`, one `AppCore` per project id behind a `Mutex`); `App` (TUI) mirrors core state via `sync_from_core`/`handle_core_event`, `ws.rs` mirrors it via JSON snapshots.
-- `phase_dispatch.rs` methods are `impl AppCore`, callable/testable without a terminal or socket.
-- `frontend/src/lib/ws.ts` types must be kept in sync by hand with the Rust message shapes in `src/server/ws.rs` — no shared schema/codegen.
-- `embed-frontend` is opt-in (`Cargo.toml` `[features] embed-frontend = []`); without it `assets::lookup` returns `None` and the server has no static UI.
+- Phase rails: 3 phases (Spec/Build/Refine); server-authoritative approval gate — `AppCore::set_phase_gate(true)` (always on now, set in `ws::init_session`) makes `try_switch_phase` require `approve_phase()` for the current phase, else `Err(SwitchDenied::NotApproved)`; persisted per-session in `session.json`, old sessions load unapproved.
+- `AppCore` (src/core/app.rs) is the single source of truth, one instance per project id cached in `ServerState.cores`; there is no other consumer now that the TUI is gone.
+- `phase_dispatch.rs` methods are `impl AppCore`, independently testable.
+- `frontend/src/lib/ws.ts` types are hand-kept in sync with `src/server/ws.rs` message shapes — no shared schema/codegen.
+- `embed-frontend` is opt-in (`Cargo.toml` `[features] embed-frontend = []`); without it the server has no static UI.
 - Domain state (`SessionManager`, `ModelSession`, `ComponentManifest`) persisted to disk under a project/session directory tree, reloadable via `ModelSession::load`.
 - Prompts are markdown files loaded at runtime, not compiled in.
-- Legacy phase names (Decompose/Component/Assembly/Refinement) only survive as `serde` deserialize aliases in `phase.rs`.
+- Legacy phase names (Decompose/Component/Assembly/Refinement) survive only as `serde` deserialize aliases in `phase.rs`.
 
 ## Gotchas
-- `src/core/app.rs::submit_prompt` (493-795, previously measured cyclomatic 55) remains the single highest-risk hotspot — untouched by this refactor but now also reachable from `ws::handle_client_message`.
-- New concurrency surface: `ServerState.cores: HashMap<String, AppCore>` behind one `Mutex` — every WS message and REST call locks the whole map; check `src/server/mod.rs::core_for` before assuming per-project isolation.
-- `SwitchDenied::NotApproved` is a *new* variant — any old exhaustive `match` on `SwitchDenied` outside this refactor's touched files will now fail to compile; grep before adding new match sites.
-- `frontend/` is a separate npm project (`package.json`/`package-lock.json`) not covered by `cargo build` — CI/build tooling must run both `npm run build` and `cargo build --features embed-frontend`, in that order (`build.rs` checks for `frontend/dist`).
-- `toml`/`css` have no jcodemunch extractor — import graph across `Cargo.toml`, `*.toml` references, and `frontend/src/app.css` is incomplete.
-- No CI/infra config detected (`get_project_intel` still returns empty infra/ci/api/data — this repo has no in-repo pipeline definitions despite the new server).
-- `python/src/ai3d_cad/__init__.py::PROTOCOL_VERSION = 2` is consumed across the Rust↔MCP boundary; unrelated to the new REST/WS protocol versioning (there is none yet) — don't conflate the two.
+- **NEVER run the `mimodel` binary or its tests without a sandboxed `HOME`** — briefing/test runs create real projects in `~/MiModel` (use `tests/common::spawn*`, which sets `HOME` to a tempdir before launching the binary).
+- `src/core/app.rs::submit_prompt` (268-486) remains the largest/highest-risk function in the repo — untouched in shape by the TUI removal but now the sole entry point from `ws::handle_client_message`.
+- `ServerState.cores: HashMap<String, AppCore>` behind one `Mutex` — every WS message and REST call locks the whole map; no per-project lock granularity.
+- The TUI removal deleted `usage.rs`, `viewer.rs`, `preview.rs`, `stl.rs`, `render.rs`, `event_handler.rs`, and `src/tui/*` along with several now-dead `AppCore` accessors (`busy`, `undo`, `usage_stats`, pending-image helpers) — don't resurrect calls to them from stale docs/context.
+- `--web` flag is a hidden deprecated no-op (`let _ = cli.web;`) kept only for old scripts/muscle memory; it has no effect.
+- `toml`/`css` have no jcodemunch extractor — import graph across `Cargo.toml`, reference `*.toml`, and `frontend/src/app.css` is incomplete.
+- No CI/infra config detected (`get_project_intel` still returns empty infra/ci/api/data).
+- `mcp/server.py` emits `BUILD_COMPONENT: <component> <status>` lines (~line 658) that `claude::parse_build_progress_line` depends on verbatim — status must be one of the known values or the line is silently dropped.
 
 ## Hot symbols
-- `src/core/app.rs:493` — `pub fn submit_prompt(&mut self, text: &str, _part_refs: &[String], lib_refs: &[String])`
-- `src/core/app.rs:223` — `pub fn set_phase_gate(&mut self, on: bool)`
-- `src/core/app.rs:230` — `pub fn is_phase_approved(&self, phase: Phase) -> bool`
-- `src/core/app.rs:245` — `pub fn approve_phase(&mut self)`
-- `src/core/app.rs:274` — `pub(crate) fn open_project_by_id(&mut self, id: &str) -> Result<(), String>`
-- `src/core/app.rs:1784` — `pub fn poll_events(&mut self) -> Vec<CoreEvent>`
-- `src/core/app.rs:1674` — `fn handle_tool_call(&mut self, tool: &ToolCall)`
-- `src/server/mod.rs:31` — `pub fn core_for(&mut self, project_id: &str) -> Result<&mut AppCore, String>`
-- `src/server/mod.rs:46` — `pub fn run_blocking(config: Config, port: u16, on_bound: impl FnOnce(std::net::SocketAddr)) -> Result<(), String>`
-- `src/server/ws.rs:44` — `async fn handle_socket(mut socket: WebSocket, state: SharedState, project_id: String)`
-- `src/server/ws.rs:98` — `fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> Vec<Value>`
-- `src/server/routes.rs:13` — `pub fn router(state: SharedState) -> Router`
-- `src/main.rs:479` — `fn main()`
-- `src/main.rs:580` — `fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Result<()>`
-- `src/phase_dispatch.rs:234` — `pub fn try_switch_phase(&mut self, target: Phase) -> Result<(), SwitchDenied>` (now gate-aware)
+- `src/core/app.rs:268` — `pub fn submit_prompt(&mut self, text: &str, part_refs: &[String], lib_refs: &[String])`
+- `src/core/app.rs:144` — `pub fn set_phase_gate(&mut self, on: bool)`
+- `src/core/app.rs:166` — `pub fn approve_phase(&mut self)`
+- `src/core/app.rs:1136` — `pub fn poll_events(&mut self) -> Vec<CoreEvent>`
+- `src/core/app.rs:1038` — `fn handle_tool_call(&mut self, tool: &ToolCall)`
+- `src/server/mod.rs:37` — `pub fn core_for(&mut self, project_id: &str) -> Result<&mut AppCore, String>`
+- `src/server/mod.rs:61` — `pub fn run_blocking(config: Config, port: u16, briefing: Option<String>, on_bound: impl FnOnce(std::net::SocketAddr)) -> Result<(), String>`
+- `src/server/ws.rs:70` — `async fn handle_socket(mut socket: WebSocket, state: SharedState, project_id: String)`
+- `src/server/ws.rs:136` — `fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> Vec<Value>`
+- `src/server/artifacts.rs:56` — `async fn get_artifact(State(state): State<SharedState>, AxumPath((project, file)): AxumPath<(String, String)>) -> Response`
+- `src/claude_bridge.rs:156` — `pub fn send_phase_prompt(&mut self, phase_name: &str, prompt: &str, images: &[PathBuf], ref_context: Option<&str>, mcp_config: Option<PathBuf>)`
+- `src/claude.rs:42` — `pub fn parse_build_progress_line(line: &str) -> Option<(String, String)>`
+- `src/phase_dispatch.rs:210` — `pub fn try_switch_phase(&mut self, target: Phase) -> Result<(), SwitchDenied>`
+- `src/main.rs:52` — `fn main()`
+- `frontend/src/lib/ws.ts:42` — `export function connectSession(projectId: string, handlers: SessionHandlers): SessionClient`
