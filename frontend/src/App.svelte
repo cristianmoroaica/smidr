@@ -268,6 +268,9 @@
           {failedComponents}
           onPartSelected={onPartSelected}
           onPartDeselected={onRemovePart}
+          onStartBuild={phase.toLowerCase() === 'build' && !busy
+            ? () => onSend('Build it from the approved spec.')
+            : null}
         />
         <Timeline {iterations} {viewing} onSelect={onSelectIteration} />
       </div>

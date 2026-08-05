@@ -10,7 +10,8 @@
     selectedParts,
     failedComponents,
     onPartSelected,
-    onPartDeselected
+    onPartDeselected,
+    onStartBuild = null
   }: {
     projectId: string;
     iterations: number[];
@@ -19,6 +20,7 @@
     failedComponents: string[];
     onPartSelected: (name: string) => void;
     onPartDeselected: (name: string) => void;
+    onStartBuild?: (() => void) | null;
   } = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -831,7 +833,13 @@
   {/if}
 
   {#if iterations.length === 0}
-    <div class="placeholder">No model yet</div>
+    <div class="placeholder">
+      <span>No model yet</span>
+      {#if onStartBuild}
+        <button class="start-build" onclick={onStartBuild}>⚒ Forge the model</button>
+        <span class="start-build-hint">Runs a build from the approved spec</span>
+      {/if}
+    </div>
   {/if}
 
   {#if loadError}
@@ -865,11 +873,41 @@
     position: absolute;
     inset: 0;
     display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
     align-items: center;
     justify-content: center;
     color: var(--text-muted, #6b7280);
     font-size: 0.9rem;
     pointer-events: none;
+  }
+
+  .start-build {
+    pointer-events: auto;
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.95rem;
+    padding: 0.65rem 1.4rem;
+    background: var(--accent, #4f8ff7);
+    color: var(--accent-fg, #ffffff);
+    border: none;
+    border-radius: var(--radius-md, 10px);
+    cursor: pointer;
+    transition: background 120ms;
+  }
+
+  .start-build:hover {
+    background: var(--accent-hover, #6ba1f8);
+  }
+
+  .start-build:focus-visible {
+    box-shadow: var(--focus-ring);
+    outline: none;
+  }
+
+  .start-build-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted, #6b7280);
   }
 
   .load-error {
