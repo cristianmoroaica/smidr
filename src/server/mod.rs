@@ -69,6 +69,10 @@ pub fn run_blocking(
         .build()
         .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
 
+    // Migrate a pre-rebrand ~/MiModel before any route or core can create
+    // ~/Smidr and permanently strand the old directory.
+    crate::storage::project::migrate_legacy_root()?;
+
     runtime.block_on(async move {
         let mut cores = HashMap::new();
         let mut briefing_project = None;

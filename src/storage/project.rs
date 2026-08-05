@@ -38,9 +38,13 @@ fn legacy_root_dir() -> PathBuf {
         .join("MiModel")
 }
 
-/// Ensure ~/Smidr/ exists. Creates with a default "Untitled" project if missing.
-/// If a pre-rebrand ~/MiModel/ exists and ~/Smidr/ does not, migrates it in place.
-pub fn ensure_root() -> Result<PathBuf, String> {
+/// One-shot migration of a pre-rebrand ~/MiModel/ to ~/Smidr/. Must run
+/// before anything else touches the storage root: `create_project` and
+/// `reference::ensure_references_dir` create ~/Smidr/ directly, and once it
+/// exists the migration is permanently skipped, stranding ~/MiModel. The
+/// server calls this once at startup; `ensure_root` also calls it for
+/// defense in depth. Idempotent.
+pub fn migrate_legacy_root() -> Result<(), String> {
     let root = root_dir();
     if !root.exists() {
         let legacy = legacy_root_dir();
@@ -49,6 +53,14 @@ pub fn ensure_root() -> Result<PathBuf, String> {
                 .map_err(|e| format!("Failed to migrate ~/MiModel to ~/Smidr: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// Ensure ~/Smidr/ exists. Creates with a default "Untitled" project if missing.
+/// If a pre-rebrand ~/MiModel/ exists and ~/Smidr/ does not, migrates it in place.
+pub fn ensure_root() -> Result<PathBuf, String> {
+    migrate_legacy_root()?;
+    let root = root_dir();
     if !root.exists() {
         std::fs::create_dir_all(&root)
             .map_err(|e| format!("Failed to create ~/Smidr/: {e}"))?;

@@ -159,3 +159,33 @@ fn delete_project_rejects_path_traversal_id() {
         "path traversal must not delete a directory outside ~/Smidr"
     );
 }
+
+#[test]
+fn legacy_mimodel_root_is_migrated_before_first_write() {
+    // Regression: `POST /api/projects` creates ~/Smidr directly. If the
+    // MiModel -> Smidr migration only ran lazily (inside ensure_root, via
+    // AppCore), a create-first client would strand the legacy directory
+    // forever. The server must migrate at startup, before any request.
+    let server = common::spawn_with_home_setup(|home| {
+        let old_proj = home.join("MiModel/Old Proj");
+        std::fs::create_dir_all(&old_proj).unwrap();
+        std::fs::write(
+            old_proj.join("project.json"),
+            r#"{"name":"Old Proj","created":"2026-01-01","description":""}"#,
+        )
+        .unwrap();
+    });
+
+    // First request is a *create* — the path that used to bypass migration.
+    let resp = ureq::post(&format!("{}/api/projects", server.base))
+        .send_json(serde_json::json!({"name": "New Proj", "description": ""}))
+        .expect("create should succeed");
+    assert_eq!(resp.status(), 200);
+
+    assert!(
+        !server.home.path().join("MiModel").exists(),
+        "legacy ~/MiModel must be gone after startup migration"
+    );
+    assert!(server.home.path().join("Smidr/Old Proj/project.json").exists());
+    assert!(server.home.path().join("Smidr/New Proj/project.json").exists());
+}

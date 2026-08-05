@@ -44,6 +44,15 @@ pub fn spawn_with_env(extra: &[(&str, &str)]) -> Server {
     spawn_inner(&[], extra, None)
 }
 
+/// Like `spawn`, but runs `setup` on the sandboxed HOME directory before the
+/// server starts — for tests that need pre-existing state (e.g. a legacy
+/// ~/MiModel root awaiting migration).
+pub fn spawn_with_home_setup(setup: impl FnOnce(&std::path::Path)) -> Server {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    setup(home.path());
+    spawn_in_home(home)
+}
+
 /// Like `spawn_with_env`, but pipes `stdin_text` to the child's stdin (then
 /// closes it) before the listening line is parsed — exercises the
 /// piped-stdin briefing path.
@@ -57,9 +66,21 @@ pub fn spawn_with_web() -> Server {
     spawn_inner(&["--web"], &[], None)
 }
 
+fn spawn_in_home(home: tempfile::TempDir) -> Server {
+    spawn_inner_in_home(&[], &[], None, home)
+}
+
 fn spawn_inner(extra_args: &[&str], extra: &[(&str, &str)], stdin_text: Option<&str>) -> Server {
     let home = tempfile::TempDir::new().expect("tempdir");
+    spawn_inner_in_home(extra_args, extra, stdin_text, home)
+}
 
+fn spawn_inner_in_home(
+    extra_args: &[&str],
+    extra: &[(&str, &str)],
+    stdin_text: Option<&str>,
+    home: tempfile::TempDir,
+) -> Server {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smidr"));
     cmd.args(["--port", "0", "--no-browser"])
         .args(extra_args)

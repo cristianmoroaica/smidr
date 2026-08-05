@@ -111,10 +111,8 @@
       const data = (await res.json()) as Project[];
       if (data.length === 1) {
         connect(data[0].id);
-      } else if (data.length > 1) {
-        projectChoices = data;
       } else {
-        lastError = 'No projects found.';
+        projectChoices = data;
       }
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
@@ -124,6 +122,32 @@
   }
 
   init();
+
+  let newProjectName = $state('');
+  let creatingProject = $state(false);
+
+  async function createProject() {
+    const name = newProjectName.trim();
+    if (!name || creatingProject) return;
+    creatingProject = true;
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, description: '' })
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(body || `POST /api/projects failed: ${res.status}`);
+      }
+      const { id } = (await res.json()) as { id: string };
+      connect(id);
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+    } finally {
+      creatingProject = false;
+    }
+  }
 
   function onSend(text: string) {
     if (!client) return;
@@ -192,17 +216,38 @@
         </div>
         {#if loadingProjects}
           <p>Loading projects...</p>
-        {:else if projectChoices.length > 0}
-          <h2>Select a project</h2>
-          <ul>
-            {#each projectChoices as p}
-              <li>
-                <button onclick={() => connect(p.id)}>{p.name ?? p.id}</button>
-              </li>
-            {/each}
-          </ul>
         {:else}
-          <p>No project selected.</p>
+          {#if projectChoices.length > 0}
+            <h2>Select a project</h2>
+            <ul>
+              {#each projectChoices as p}
+                <li>
+                  <button onclick={() => connect(p.id)}>{p.name ?? p.id}</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <form
+            class="new-project"
+            onsubmit={(e) => {
+              e.preventDefault();
+              createProject();
+            }}
+          >
+            <input
+              type="text"
+              placeholder="New project name..."
+              bind:value={newProjectName}
+              disabled={creatingProject}
+            />
+            <button
+              type="submit"
+              class="create-btn"
+              disabled={creatingProject || !newProjectName.trim()}
+            >
+              Create
+            </button>
+          </form>
         {/if}
       </div>
     </div>
@@ -413,5 +458,52 @@
 
   .picker button:focus-visible {
     box-shadow: var(--focus-ring);
+  }
+
+  .new-project {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+  }
+
+  .new-project input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    padding: 0.6rem 0.9rem;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+  }
+
+  .new-project input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .new-project input:focus-visible {
+    box-shadow: var(--focus-ring);
+    outline: none;
+  }
+
+  .picker button.create-btn {
+    width: auto;
+    flex: 0 0 auto;
+    text-align: center;
+    font-weight: 600;
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--accent-fg);
+  }
+
+  .picker button.create-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .picker button.create-btn:disabled {
+    background: var(--bg-raised);
+    color: var(--text-muted);
+    border-color: var(--border);
+    cursor: default;
   }
 </style>
