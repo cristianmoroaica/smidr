@@ -168,10 +168,19 @@ impl AppCore {
     }
 
 
-    /// Copy the latest iteration's geometry into the session dir as
-    /// `export.stl` (and, when a `_buffer.step` is present, `export.step`).
-    /// Returns the session dir and the list of file names actually written.
-    /// `Err` when there is no active session dir or no STL to export.
+    /// Copy everything a user takes away from a session into
+    /// `<session>/exports/`: the latest iteration's geometry as
+    /// `assembly.stl` (and, when a `_buffer.step` is present,
+    /// `assembly.step`), plus one `<component>.stl`/`<component>.step` pair
+    /// per `components/<name>/` subdirectory (from that directory's
+    /// `result.stl`/`result.step`, whichever exist). Returns the exports dir
+    /// and the list of file names actually written (basenames, deduped,
+    /// `assembly.stl`/`assembly.step` first, then components in directory
+    /// name order). `Err` when there is no active session dir or no STL to
+    /// export.
+    ///
+    /// A component literally named `assembly` will overwrite
+    /// `assembly.stl`/`assembly.step` — acceptable for this personal tool.
     pub(crate) fn export_artifacts(&mut self) -> Result<(PathBuf, Vec<String>), String> {
         let session_dir = self
             .session
@@ -183,15 +192,18 @@ impl AppCore {
             .latest_stl_path()
             .ok_or_else(|| "No model to export.".to_string())?;
 
-        let export_stl = session_dir.join("export.stl");
-        std::fs::copy(&stl_path, &export_stl).map_err(|e| format!("Export failed: {e}"))?;
-        let mut written = vec!["export.stl".to_string()];
+        let exports_dir = session_dir.join("exports");
+        std::fs::create_dir_all(&exports_dir).map_err(|e| format!("Export failed: {e}"))?;
+
+        let assembly_stl = exports_dir.join("assembly.stl");
+        std::fs::copy(&stl_path, &assembly_stl).map_err(|e| format!("Export failed: {e}"))?;
+        let mut written = vec!["assembly.stl".to_string()];
 
         let buffer_step = session_dir.join("_buffer.step");
         if buffer_step.exists() {
-            let export_step = session_dir.join("export.step");
-            match std::fs::copy(&buffer_step, &export_step) {
-                Ok(_) => written.push("export.step".to_string()),
+            let assembly_step = exports_dir.join("assembly.step");
+            match std::fs::copy(&buffer_step, &assembly_step) {
+                Ok(_) => written.push("assembly.step".to_string()),
                 // A STEP that exists but cannot be copied is omitted from
                 // `written` (callers only ever advertise files actually on
                 // disk) — log it so the omission is diagnosable rather than
@@ -200,16 +212,54 @@ impl AppCore {
             }
         }
 
-        Ok((session_dir, written))
+        let components_dir = session_dir.join("components");
+        if let Ok(entries) = std::fs::read_dir(&components_dir) {
+            let mut names: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| {
+                    !name.is_empty()
+                        && !name.starts_with('.')
+                        && !name.contains('/')
+                        && !name.contains('\\')
+                })
+                .collect();
+            names.sort();
+
+            for name in names {
+                let comp_dir = components_dir.join(&name);
+
+                let result_stl = comp_dir.join("result.stl");
+                if result_stl.exists() {
+                    let dest = exports_dir.join(format!("{name}.stl"));
+                    match std::fs::copy(&result_stl, &dest) {
+                        Ok(_) => written.push(format!("{name}.stl")),
+                        Err(e) => eprintln!("export: failed to copy {}: {e}", result_stl.display()),
+                    }
+                }
+
+                let result_step = comp_dir.join("result.step");
+                if result_step.exists() {
+                    let dest = exports_dir.join(format!("{name}.step"));
+                    match std::fs::copy(&result_step, &dest) {
+                        Ok(_) => written.push(format!("{name}.step")),
+                        Err(e) => eprintln!("export: failed to copy {}: {e}", result_step.display()),
+                    }
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        written.retain(|name| seen.insert(name.clone()));
+
+        Ok((exports_dir, written))
     }
 
     pub(crate) fn handle_export(&mut self) {
         match self.export_artifacts() {
-            Ok((session_dir, _written)) => {
-                self.push_message(
-                    "system",
-                    &format!("Exported to {}", session_dir.join("export.stl").display()),
-                );
+            Ok((exports_dir, _written)) => {
+                self.push_message("system", &format!("Exported to {}", exports_dir.display()));
             }
             Err(e) => {
                 self.push_message("system", &e);

@@ -189,3 +189,117 @@ fn snapshot_iterations_reflect_glb_artifacts_on_disk() {
     assert_eq!(snapshot2["type"], "snapshot");
     assert_eq!(snapshot2["iterations"], json!([1]));
 }
+
+#[test]
+fn legacy_root_and_new_iterations_subdir_are_both_served_and_listed() {
+    let server = common::spawn();
+    let id = create_project(&server.base, "widget-art-5");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+    force_session_creation(&mut ws);
+
+    let session_dir = find_session_dir(server.home.path(), &id);
+
+    // Legacy root-level pair.
+    let root_glb = b"glTF-root".to_vec();
+    std::fs::write(session_dir.join("iteration_001.glb"), &root_glb).expect("write root glb");
+    let root_manifest = json!({"components": [], "dimensions": {}, "src": "root"});
+    std::fs::write(
+        session_dir.join("iteration_001.manifest.json"),
+        serde_json::to_vec(&root_manifest).unwrap(),
+    )
+    .expect("write root manifest");
+
+    // New iterations/ subdir pair.
+    let iterations_dir = session_dir.join("iterations");
+    std::fs::create_dir_all(&iterations_dir).expect("mkdir iterations");
+    let sub_glb = b"glTF-subdir".to_vec();
+    std::fs::write(iterations_dir.join("iteration_002.glb"), &sub_glb).expect("write subdir glb");
+    let sub_manifest = json!({"components": [], "dimensions": {}, "src": "subdir"});
+    std::fs::write(
+        iterations_dir.join("iteration_002.manifest.json"),
+        serde_json::to_vec(&sub_manifest).unwrap(),
+    )
+    .expect("write subdir manifest");
+
+    // Both numbers reported by a fresh snapshot.
+    let mut ws2 = connect(&server, &id);
+    let snapshot2 = read_json(&mut ws2);
+    assert_eq!(snapshot2["type"], "snapshot");
+    assert_eq!(snapshot2["iterations"], json!([1, 2]));
+
+    // Both downloadable, with correct content types and exact bytes.
+    let mut resp = ureq::get(&format!("{}/api/artifacts/{}/iteration_001.glb", server.base, id))
+        .call()
+        .expect("root glb should be served");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        "model/gltf-binary"
+    );
+    let body = resp.body_mut().read_to_string().expect("read root glb body");
+    assert_eq!(body.into_bytes(), root_glb);
+
+    let mut resp = ureq::get(&format!(
+        "{}/api/artifacts/{}/iteration_001.manifest.json",
+        server.base, id
+    ))
+    .call()
+    .expect("root manifest should be served");
+    assert_eq!(
+        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        "application/json"
+    );
+    let body: Value = resp.body_mut().read_json().unwrap();
+    assert_eq!(body, root_manifest);
+
+    let mut resp = ureq::get(&format!("{}/api/artifacts/{}/iteration_002.glb", server.base, id))
+        .call()
+        .expect("subdir glb should be served");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        "model/gltf-binary"
+    );
+    let body = resp.body_mut().read_to_string().expect("read subdir glb body");
+    assert_eq!(body.into_bytes(), sub_glb);
+
+    let mut resp = ureq::get(&format!(
+        "{}/api/artifacts/{}/iteration_002.manifest.json",
+        server.base, id
+    ))
+    .call()
+    .expect("subdir manifest should be served");
+    let body: Value = resp.body_mut().read_json().unwrap();
+    assert_eq!(body, sub_manifest);
+}
+
+#[test]
+fn iterations_subdir_copy_wins_when_same_number_exists_in_both_locations() {
+    let server = common::spawn();
+    let id = create_project(&server.base, "widget-art-6");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+    force_session_creation(&mut ws);
+
+    let session_dir = find_session_dir(server.home.path(), &id);
+
+    // Same iteration number in both locations, different bytes.
+    std::fs::write(session_dir.join("iteration_001.glb"), b"root-bytes").expect("write root glb");
+    let iterations_dir = session_dir.join("iterations");
+    std::fs::create_dir_all(&iterations_dir).expect("mkdir iterations");
+    std::fs::write(iterations_dir.join("iteration_001.glb"), b"subdir-bytes").expect("write subdir glb");
+
+    let mut resp = ureq::get(&format!("{}/api/artifacts/{}/iteration_001.glb", server.base, id))
+        .call()
+        .expect("glb should be served");
+    let body = resp.body_mut().read_to_string().expect("read glb body");
+    assert_eq!(body, "subdir-bytes");
+
+    // The merged listing still reports the number only once.
+    let mut ws2 = connect(&server, &id);
+    let snapshot2 = read_json(&mut ws2);
+    assert_eq!(snapshot2["iterations"], json!([1]));
+}

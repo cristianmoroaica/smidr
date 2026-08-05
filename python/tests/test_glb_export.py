@@ -99,8 +99,8 @@ def test_next_iteration_and_export_iteration_append_only(tmp_path):
 
     n1 = glb_export.export_iteration(session_dir, components, {"x": 10, "y": 20, "z": 30})
     assert n1 == 1
-    glb1 = session_dir / "iteration_001.glb"
-    manifest1 = session_dir / "iteration_001.manifest.json"
+    glb1 = session_dir / "iterations" / "iteration_001.glb"
+    manifest1 = session_dir / "iterations" / "iteration_001.manifest.json"
     assert glb1.exists()
     assert manifest1.exists()
     glb1_mtime = glb1.stat().st_mtime
@@ -108,8 +108,8 @@ def test_next_iteration_and_export_iteration_append_only(tmp_path):
 
     n2 = glb_export.export_iteration(session_dir, components, {"x": 10, "y": 20, "z": 30})
     assert n2 == 2
-    glb2 = session_dir / "iteration_002.glb"
-    manifest2 = session_dir / "iteration_002.manifest.json"
+    glb2 = session_dir / "iterations" / "iteration_002.glb"
+    manifest2 = session_dir / "iterations" / "iteration_002.manifest.json"
     assert glb2.exists()
     assert manifest2.exists()
 
@@ -124,6 +124,50 @@ def test_next_iteration_and_export_iteration_append_only(tmp_path):
 def test_next_iteration_missing_dir_returns_1(tmp_path):
     missing = tmp_path / "does_not_exist"
     assert glb_export.next_iteration(missing) == 1
+
+
+def test_export_iteration_creates_iterations_dir_and_leaves_root_clean(tmp_path):
+    session_dir = tmp_path / "session"
+    components = _two_box_scene()
+
+    n = glb_export.export_iteration(session_dir, components, {"x": 10, "y": 20, "z": 30})
+    assert n == 1
+
+    iterations_dir = session_dir / "iterations"
+    assert (iterations_dir / "iteration_001.glb").exists()
+    assert (iterations_dir / "iteration_001.manifest.json").exists()
+
+    # nothing new landed directly in the session root
+    root_entries = {p.name for p in session_dir.iterdir()}
+    assert root_entries == {"iterations"}
+
+
+def test_next_iteration_and_export_iteration_continue_past_legacy_root_files(tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    for i in range(1, 34):
+        (session_dir / f"iteration_{i:03d}.glb").touch()
+
+    assert glb_export.next_iteration(session_dir) == 34
+
+    components = _two_box_scene()
+    n = glb_export.export_iteration(session_dir, components, {"x": 10, "y": 20, "z": 30})
+    assert n == 34
+    assert (session_dir / "iterations" / "iteration_034.glb").exists()
+    assert (session_dir / "iterations" / "iteration_034.manifest.json").exists()
+    # legacy file untouched
+    assert (session_dir / "iteration_033.glb").exists()
+
+
+def test_next_iteration_mixed_legacy_root_and_iterations_dir(tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "iteration_005.glb").touch()
+    iterations_dir = session_dir / "iterations"
+    iterations_dir.mkdir()
+    (iterations_dir / "iteration_007.glb").touch()
+
+    assert glb_export.next_iteration(session_dir) == 8
 
 
 def test_load_components_skips_missing_and_bad_paths(tmp_path):

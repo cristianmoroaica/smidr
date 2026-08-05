@@ -87,7 +87,9 @@
     openFolderError = null;
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/open-folder`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'exports' })
       });
       if (!res.ok) throw new Error(`Open folder failed: ${res.status}`);
     } catch (e) {

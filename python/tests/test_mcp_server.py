@@ -148,7 +148,7 @@ def test_export_build_iteration_applies_placements(tmp_path):
     n = server._export_build_iteration(str(session_dir), "build", None, None)
     assert n is not None
 
-    glb_path = session_dir / f"iteration_{n:03d}.glb"
+    glb_path = session_dir / "iterations" / f"iteration_{n:03d}.glb"
     assert glb_path.exists()
 
     loaded = trimesh.load(str(glb_path), file_type="glb")

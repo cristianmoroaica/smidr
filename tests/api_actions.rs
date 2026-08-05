@@ -182,17 +182,53 @@ fn export_writes_stl_and_step_and_they_are_downloadable_with_correct_headers() {
     std::fs::write(session_dir.join("_buffer.stl"), b"fake stl bytes").unwrap();
     std::fs::write(session_dir.join("_buffer.step"), b"fake step bytes").unwrap();
 
+    let body_dir = session_dir.join("components/body");
+    std::fs::create_dir_all(&body_dir).unwrap();
+    std::fs::write(body_dir.join("result.stl"), b"fake body stl").unwrap();
+    std::fs::write(body_dir.join("result.step"), b"fake body step").unwrap();
+
+    let lid_dir = session_dir.join("components/lid");
+    std::fs::create_dir_all(&lid_dir).unwrap();
+    std::fs::write(lid_dir.join("result.stl"), b"fake lid stl").unwrap();
+    // Intentionally no result.step for lid — proves silent skip.
+
     let (status, body) = post_json(&format!("{}/api/projects/{}/export", server.base, id), Value::Null);
     assert_eq!(status, 200);
-    assert_eq!(body["dir"].as_str().unwrap(), session_dir.to_string_lossy());
-    assert!(session_dir.join("export.stl").exists());
-    assert!(session_dir.join("export.step").exists());
+    let exports_dir = session_dir.join("exports");
+    assert_eq!(body["dir"].as_str().unwrap(), exports_dir.to_string_lossy());
+    assert!(body["dir"].as_str().unwrap().ends_with("/exports"));
+
+    assert!(exports_dir.join("assembly.stl").exists());
+    assert!(exports_dir.join("assembly.step").exists());
+    assert!(exports_dir.join("body.stl").exists());
+    assert!(exports_dir.join("body.step").exists());
+    assert!(exports_dir.join("lid.stl").exists());
+    assert!(!exports_dir.join("lid.step").exists());
+
+    // Legacy top-level export location must no longer be created.
+    assert!(!session_dir.join("export.stl").exists());
+    assert!(!session_dir.join("export.step").exists());
 
     let files = body["files"].as_array().expect("files should be an array");
-    assert_eq!(files.len(), 2);
+    assert_eq!(files.len(), 5);
     let names: Vec<&str> = files.iter().map(|f| f["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"export.stl"));
-    assert!(names.contains(&"export.step"));
+    assert!(names.contains(&"assembly.stl"));
+    assert!(names.contains(&"assembly.step"));
+    assert!(names.contains(&"body.stl"));
+    assert!(names.contains(&"body.step"));
+    assert!(names.contains(&"lid.stl"));
+    assert!(!names.contains(&"lid.step"));
+
+    let expected_bytes = |name: &str| -> &'static [u8] {
+        match name {
+            "assembly.stl" => b"fake stl bytes",
+            "assembly.step" => b"fake step bytes",
+            "body.stl" => b"fake body stl",
+            "body.step" => b"fake body step",
+            "lid.stl" => b"fake lid stl",
+            other => panic!("unexpected file name {other}"),
+        }
+    };
 
     for f in files {
         let name = f["name"].as_str().unwrap();
@@ -208,10 +244,42 @@ fn export_writes_stl_and_step_and_they_are_downloadable_with_correct_headers() {
             resp.headers().get("content-disposition").unwrap().to_str().unwrap(),
             format!("attachment; filename=\"{name}\"")
         );
-        let body = resp.body_mut().read_to_string().expect("read body as string");
-        let expected = if name == "export.stl" { "fake stl bytes" } else { "fake step bytes" };
-        assert_eq!(body, expected);
+        let body_bytes = resp.body_mut().read_to_vec().expect("read body as bytes");
+        assert_eq!(body_bytes, expected_bytes(name));
     }
+}
+
+#[test]
+fn open_folder_with_exports_target_404s_before_export_and_200s_after() {
+    let server = spawn();
+    let id = create_project(&server.base, "widget");
+    establish_session(&server, &id);
+
+    let (status, body) = post_json(
+        &format!("{}/api/projects/{}/open-folder", server.base, id),
+        json!({"target": "exports"}),
+    );
+    assert_eq!(status, 404);
+    assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()));
+
+    let (status, body) = post_json(&format!("{}/api/projects/{}/open-folder", server.base, id), Value::Null);
+    assert_eq!(status, 200);
+    let session_dir = std::path::PathBuf::from(body["path"].as_str().unwrap());
+    std::fs::write(session_dir.join("_buffer.stl"), b"fake stl bytes").unwrap();
+
+    let (status, _body) = post_json(&format!("{}/api/projects/{}/export", server.base, id), Value::Null);
+    assert_eq!(status, 200);
+
+    let (status, body) = post_json(
+        &format!("{}/api/projects/{}/open-folder", server.base, id),
+        json!({"target": "exports"}),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(body["path"].as_str().unwrap(), session_dir.join("exports").to_string_lossy());
+
+    let (status, body) = post_json(&format!("{}/api/projects/{}/open-folder", server.base, id), Value::Null);
+    assert_eq!(status, 200);
+    assert_eq!(body["path"].as_str().unwrap(), session_dir.to_string_lossy());
 }
 
 /// Regression: the download `url` the server hands back must be usable
@@ -240,7 +308,7 @@ fn export_url_is_percent_encoded_and_downloadable_verbatim_for_url_significant_i
     let files = body["files"].as_array().expect("files should be an array");
     assert_eq!(files.len(), 1);
     let url = files[0]["url"].as_str().unwrap();
-    assert_eq!(url, "/api/projects/a%3Fb/export/export.stl", "id must be percent-encoded");
+    assert_eq!(url, "/api/projects/a%3Fb/export/assembly.stl", "id must be percent-encoded");
 
     // Follow the returned URL verbatim, as the frontend anchor does.
     let resp = ureq::get(&format!("{}{}", server.base, url)).call();
@@ -280,8 +348,8 @@ fn export_file_rejects_arbitrary_and_traversal_names_while_real_export_succeeds(
     // Sanity: the exact same core/session state genuinely serves the real
     // file, so the 404s above are the guard rejecting the name, not some
     // unrelated failure (e.g. a missing core).
-    let resp = ureq::get(&format!("{}/api/projects/{}/export/export.stl", server.base, id)).call();
-    assert_eq!(resp.expect("export.stl should download").status().as_u16(), 200);
+    let resp = ureq::get(&format!("{}/api/projects/{}/export/assembly.stl", server.base, id)).call();
+    assert_eq!(resp.expect("assembly.stl should download").status().as_u16(), 200);
 }
 
 #[test]

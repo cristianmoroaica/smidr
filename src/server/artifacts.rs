@@ -6,8 +6,13 @@
 //! `AppCore` already open in `ServerState::cores` for `project` — no lazy
 //! core creation and no path segment beyond the validated basename is ever
 //! joined onto a filesystem path.
+//!
+//! New iteration artifacts land in `<session>/iterations/`; existing
+//! sessions still have theirs at the session root. Both locations are
+//! checked — `iterations/` first, falling back to the session root — so
+//! lookups and discovery work transparently across old and new sessions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
@@ -78,7 +83,10 @@ async fn get_artifact(
         }
     };
 
-    let path = session_dir.join(&file);
+    let path = match resolve_artifact_path(&session_dir, &file) {
+        Some(p) => p,
+        None => return error_response(StatusCode::NOT_FOUND, "artifact not found"),
+    };
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return error_response(StatusCode::NOT_FOUND, "artifact not found"),
@@ -92,18 +100,31 @@ async fn get_artifact(
     (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
 }
 
-/// Scan `dir` for `iteration_<digits>.glb` files, returning the parsed
-/// digits as `u32`s, ascending and deduped. Returns an empty vec if `dir` is
-/// `None` or unreadable.
-pub fn glb_iterations(dir: Option<&Path>) -> Vec<u32> {
-    let Some(dir) = dir else {
-        return Vec::new();
-    };
+/// Resolve `file` (an already-`parse_artifact_file`-validated basename)
+/// against a session directory, preferring `<session>/iterations/<file>`
+/// and falling back to `<session>/<file>` (the legacy location). Returns
+/// `None` if neither exists.
+fn resolve_artifact_path(session_dir: &Path, file: &str) -> Option<PathBuf> {
+    let in_iterations = session_dir.join("iterations").join(file);
+    if in_iterations.is_file() {
+        return Some(in_iterations);
+    }
+    let in_root = session_dir.join(file);
+    if in_root.is_file() {
+        return Some(in_root);
+    }
+    None
+}
+
+/// Scan a single directory (non-recursively) for `iteration_<digits>.glb`
+/// files, returning the parsed digits as `u32`s. Returns an empty vec if
+/// `dir` is missing or unreadable.
+fn scan_glb_iterations(dir: &Path) -> Vec<u32> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
 
-    let mut iterations: Vec<u32> = entries
+    entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name();
@@ -114,7 +135,21 @@ pub fn glb_iterations(dir: Option<&Path>) -> Vec<u32> {
             }
             digits.parse::<u32>().ok()
         })
-        .collect();
+        .collect()
+}
+
+/// Scan `dir` (a session directory) for `iteration_<digits>.glb` files in
+/// both `dir/iterations` and `dir` itself, returning the merged, parsed
+/// digits as `u32`s, ascending and deduped (a number present in both
+/// locations appears once). Returns an empty vec if `dir` is `None` or
+/// unreadable.
+pub fn glb_iterations(dir: Option<&Path>) -> Vec<u32> {
+    let Some(dir) = dir else {
+        return Vec::new();
+    };
+
+    let mut iterations = scan_glb_iterations(dir);
+    iterations.extend(scan_glb_iterations(&dir.join("iterations")));
 
     iterations.sort_unstable();
     iterations.dedup();
@@ -175,5 +210,51 @@ mod tests {
         std::fs::write(dir.path().join("iteration_abc.glb"), b"x").unwrap();
         std::fs::write(dir.path().join("iteration_.glb"), b"x").unwrap();
         assert_eq!(glb_iterations(Some(dir.path())), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn glb_iterations_merges_root_and_iterations_subdir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("iteration_001.glb"), b"x").unwrap();
+        std::fs::create_dir(dir.path().join("iterations")).unwrap();
+        std::fs::write(dir.path().join("iterations").join("iteration_002.glb"), b"x").unwrap();
+
+        assert_eq!(glb_iterations(Some(dir.path())), vec![1, 2]);
+    }
+
+    #[test]
+    fn glb_iterations_dedupes_number_present_in_both_locations() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("iteration_001.glb"), b"root").unwrap();
+        std::fs::create_dir(dir.path().join("iterations")).unwrap();
+        std::fs::write(dir.path().join("iterations").join("iteration_001.glb"), b"new").unwrap();
+
+        assert_eq!(glb_iterations(Some(dir.path())), vec![1]);
+    }
+
+    #[test]
+    fn resolve_artifact_path_prefers_iterations_subdir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("iteration_001.glb"), b"root").unwrap();
+        std::fs::create_dir(dir.path().join("iterations")).unwrap();
+        std::fs::write(dir.path().join("iterations").join("iteration_001.glb"), b"new").unwrap();
+
+        let resolved = resolve_artifact_path(dir.path(), "iteration_001.glb").unwrap();
+        assert_eq!(resolved, dir.path().join("iterations").join("iteration_001.glb"));
+    }
+
+    #[test]
+    fn resolve_artifact_path_falls_back_to_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("iteration_001.glb"), b"root").unwrap();
+
+        let resolved = resolve_artifact_path(dir.path(), "iteration_001.glb").unwrap();
+        assert_eq!(resolved, dir.path().join("iteration_001.glb"));
+    }
+
+    #[test]
+    fn resolve_artifact_path_none_when_missing_everywhere() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(resolve_artifact_path(dir.path(), "iteration_001.glb").is_none());
     }
 }

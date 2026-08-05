@@ -77,29 +77,60 @@ def write_manifest(components: dict, spec_dims: dict, out_path, sources: dict = 
         json.dump(manifest, f, indent=2)
 
 
+ITERATIONS_DIRNAME = "iterations"
+
+_ITERATION_GLOB_RE = re.compile(r"^iteration_(\d+)\.glb$")
+
+
+def iterations_dir(session_dir) -> str:
+    """Return <session_dir>/iterations as a string path."""
+    return os.path.join(str(session_dir), ITERATIONS_DIRNAME)
+
+
+def _max_iteration_number(*dirs) -> int:
+    """Return the max N parsed from iteration_<digits>.glb basenames across dirs.
+
+    Returns 0 when no directory yields a parsable file (including missing dirs).
+    """
+    best = 0
+    for d in dirs:
+        for path in glob.glob(os.path.join(d, "iteration_*.glb")):
+            match = _ITERATION_GLOB_RE.match(os.path.basename(path))
+            if not match:
+                continue
+            best = max(best, int(match.group(1)))
+    return best
+
+
 def next_iteration(session_dir) -> int:
-    """Return the next append-only iteration number for session_dir."""
+    """Return the next iteration number for session_dir.
+
+    Computed as max(N) + 1 across both <session_dir>/iterations/iteration_*.glb
+    and legacy <session_dir>/iteration_*.glb, so an existing session with
+    iterations still in the root continues numbering without collisions.
+    """
     session_dir = str(session_dir)
-    if not os.path.isdir(session_dir):
-        return 1
-    existing = glob.glob(os.path.join(session_dir, "iteration_*.glb"))
-    return 1 + len(existing)
+    return 1 + _max_iteration_number(iterations_dir(session_dir), session_dir)
 
 
 def export_iteration(session_dir, components: dict, spec_dims: dict, sources: dict = None) -> int:
-    """Export the next iteration_NNN.glb + .manifest.json into session_dir.
+    """Export the next iteration_NNN.glb + .manifest.json into <session_dir>/iterations/.
 
-    Returns the iteration number used. Never overwrites an existing pair.
+    Returns the iteration number used. Never overwrites an existing pair,
+    checking both the iterations/ subdir and the legacy session root.
     """
     session_dir = str(session_dir)
+    target_dir = iterations_dir(session_dir)
     n = next_iteration(session_dir)
     while True:
-        glb_path = os.path.join(session_dir, f"iteration_{n:03d}.glb")
-        if not os.path.exists(glb_path):
+        glb_path = os.path.join(target_dir, f"iteration_{n:03d}.glb")
+        legacy_glb_path = os.path.join(session_dir, f"iteration_{n:03d}.glb")
+        if not os.path.exists(glb_path) and not os.path.exists(legacy_glb_path):
             break
         n += 1
 
-    manifest_path = os.path.join(session_dir, f"iteration_{n:03d}.manifest.json")
+    os.makedirs(target_dir, exist_ok=True)
+    manifest_path = os.path.join(target_dir, f"iteration_{n:03d}.manifest.json")
     export_glb(components, glb_path)
     write_manifest(components, spec_dims, manifest_path, sources=sources)
     return n

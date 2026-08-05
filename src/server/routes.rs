@@ -148,6 +148,23 @@ pub(crate) fn is_valid_project_name(name: &str) -> bool {
     true
 }
 
+/// Validates a filename requested off `GET /api/projects/{id}/export/{file}`
+/// before it is ever joined onto a filesystem path: non-empty, no `/`, `\`,
+/// or NUL byte, not `.` or `..`, does not start with `.`, and ends with
+/// `.stl` or `.step` (case-sensitive).
+fn is_valid_export_file_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return false;
+    }
+    if name.starts_with('.') {
+        return false;
+    }
+    name.ends_with(".stl") || name.ends_with(".step")
+}
+
 async fn create_project(
     State(_state): State<SharedState>,
     Json(req): Json<CreateProjectRequest>,
@@ -239,10 +256,12 @@ fn encode_path_segment(s: &str) -> String {
     out
 }
 
-/// `POST /api/projects/{id}/export` — copies the latest iteration's
-/// geometry into the session dir as `export.stl` (and `export.step` when a
-/// `_buffer.step` exists), returning download URLs for the files actually
-/// written. 404 when there is no session or nothing to export.
+/// `POST /api/projects/{id}/export` — copies everything a user takes away
+/// from the session into `<session>/exports/`: `assembly.stl`/`.step` (from
+/// the latest iteration + `_buffer.step`) plus one
+/// `<component>.stl`/`.step` pair per built component, returning download
+/// URLs for the files actually written. 404 when there is no session or
+/// nothing to export.
 async fn export_project(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
     if !is_valid_project_name(&id) {
         return error_response(StatusCode::BAD_REQUEST, "invalid project id");
@@ -282,23 +301,25 @@ async fn export_project(State(state): State<SharedState>, Path(id): Path<String>
 }
 
 /// `GET /api/projects/{id}/export/{file}` — serves a previously exported
-/// artifact. `file` must be exactly `export.stl` or `export.step`; no other
-/// value is ever joined onto a filesystem path (mirrors the strictness of
-/// `server::artifacts::get_artifact`). Reads the already-open core only (no
-/// lazy project-opening) — same as `artifacts::get_artifact`.
+/// artifact out of `<session>/exports/`. `file` must be a bare filename
+/// (non-empty, no `/`, `\`, NUL, not `.`/`..`, not starting with `.`) ending
+/// in `.stl` or `.step`; no other value is ever joined onto a filesystem
+/// path (mirrors the strictness of `server::artifacts::get_artifact`). Reads
+/// the already-open core only (no lazy project-opening) — same as
+/// `artifacts::get_artifact`.
 ///
 /// Known inconsistency, deliberately left as-is: if the server process is
 /// restarted (or this project's `AppCore` is otherwise evicted from
-/// `ServerState.cores`) after `export.stl`/`export.step` were written to
-/// disk, this handler 404s on a file that genuinely still exists, because
-/// there is no cached core to resolve the session dir from. In practice
-/// this is harmless — the frontend always `POST`s `/export` immediately
-/// before following either download URL, which re-opens the core as a side
-/// effect — but a page reload replaying a stored download link across a
-/// server restart would hit this. Not fixed here to avoid giving a plain
-/// file download an implicit, unauthenticated "open any project" lazy-load
-/// path; if it becomes a real problem, prefer re-deriving the session dir
-/// straight from `storage::project` without materializing a full `AppCore`.
+/// `ServerState.cores`) after the exports were written to disk, this
+/// handler 404s on a file that genuinely still exists, because there is no
+/// cached core to resolve the session dir from. In practice this is
+/// harmless — the frontend always `POST`s `/export` immediately before
+/// following any download URL, which re-opens the core as a side effect —
+/// but a page reload replaying a stored download link across a server
+/// restart would hit this. Not fixed here to avoid giving a plain file
+/// download an implicit, unauthenticated "open any project" lazy-load path;
+/// if it becomes a real problem, prefer re-deriving the session dir straight
+/// from `storage::project` without materializing a full `AppCore`.
 async fn get_export_file(
     State(state): State<SharedState>,
     Path((id, file)): Path<(String, String)>,
@@ -308,7 +329,7 @@ async fn get_export_file(
     }
     let id = id.trim();
 
-    if file != "export.stl" && file != "export.step" {
+    if !is_valid_export_file_name(&file) {
         return error_response(StatusCode::NOT_FOUND, "export file not found");
     }
 
@@ -323,7 +344,7 @@ async fn get_export_file(
         }
     };
 
-    let path = session_dir.join(&file);
+    let path = session_dir.join("exports").join(&file);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return error_response(StatusCode::NOT_FOUND, "export file not found"),
@@ -344,20 +365,35 @@ async fn get_export_file(
 }
 
 /// `POST /api/projects/{id}/open-folder` — resolves the project's current
-/// session directory and asks the desktop file manager to open it via
-/// `xdg-open`, detached (spawn errors are ignored; the response is 200
-/// regardless of whether a file manager is actually available). Safe to
-/// expose unauthenticated because the server always binds `127.0.0.1` on
-/// the user's own machine, never reachable from another host.
+/// session directory (or, with an optional JSON body `{"target":
+/// "exports"}`, its `exports/` subdirectory) and asks the desktop file
+/// manager to open it via `xdg-open`, detached (spawn errors are ignored;
+/// the response is 200 regardless of whether a file manager is actually
+/// available). Safe to expose unauthenticated because the server always
+/// binds `127.0.0.1` on the user's own machine, never reachable from
+/// another host.
+///
+/// The body is taken as a raw `String` (not `Json<_>`/`Option<Json<_>>`) so
+/// an absent or empty body — the common case — is always accepted
+/// regardless of content-type, and parsed leniently with
+/// `serde_json::from_str::<Value>(&body).ok()`. When `target == "exports"`,
+/// the exports directory must already exist (this endpoint never creates
+/// it) — 404 otherwise. Any other body, or none, keeps prior behavior
+/// exactly (session dir).
 ///
 /// Test hook: set the environment variable `SMIDR_NO_OPEN=1` to skip the
 /// `xdg-open` spawn entirely — used by the sandboxed-HOME test harness,
 /// which must not pop file-manager windows while running `cargo test`.
-async fn open_folder(State(state): State<SharedState>, Path(id): Path<String>) -> Response {
+async fn open_folder(State(state): State<SharedState>, Path(id): Path<String>, body: String) -> Response {
     if !is_valid_project_name(&id) {
         return error_response(StatusCode::BAD_REQUEST, "invalid project id");
     }
     let id = id.trim();
+
+    let want_exports = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|v| v.get("target").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        .is_some_and(|t| t == "exports");
 
     let dir = {
         let mut guard = match state.lock() {
@@ -373,6 +409,16 @@ async fn open_folder(State(state): State<SharedState>, Path(id): Path<String>) -
             Some(dir) => dir.to_path_buf(),
             None => return error_response(StatusCode::NOT_FOUND, "no session"),
         }
+    };
+
+    let dir = if want_exports {
+        let exports_dir = dir.join("exports");
+        if !exports_dir.is_dir() {
+            return error_response(StatusCode::NOT_FOUND, "no exports directory");
+        }
+        exports_dir
+    } else {
+        dir
     };
 
     if std::env::var("SMIDR_NO_OPEN").as_deref() != Ok("1") {

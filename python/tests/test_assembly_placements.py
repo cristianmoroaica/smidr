@@ -368,8 +368,8 @@ def test_export_build_iteration_instances_multiple_nodes_per_component(tmp_path)
     n = server._export_build_iteration(str(session_dir), "build", None, None)
     assert n is not None
 
-    glb_path = session_dir / f"iteration_{n:03d}.glb"
-    manifest_path = session_dir / f"iteration_{n:03d}.manifest.json"
+    glb_path = session_dir / "iterations" / f"iteration_{n:03d}.glb"
+    manifest_path = session_dir / "iterations" / f"iteration_{n:03d}.manifest.json"
     assert glb_path.exists()
     assert manifest_path.exists()
 
