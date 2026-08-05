@@ -80,6 +80,11 @@ pub fn ensure_references_dir() -> Result<PathBuf, String> {
 }
 
 /// Write `<slug>.toml` for the component into the given directory.
+///
+/// No production caller remains after the TUI's `/ref` research-and-save
+/// flow (the only caller of `save`) was removed in Phase 4 — kept for its
+/// unit tests and as a building block if a reference-save UI path returns.
+#[allow(dead_code)]
 pub fn save_to_dir(component: &ReferenceComponent, dir: &Path) -> Result<String, String> {
     let slug = slug_from_name(&component.identity.name);
     let path = dir.join(format!("{slug}.toml"));
@@ -91,6 +96,7 @@ pub fn save_to_dir(component: &ReferenceComponent, dir: &Path) -> Result<String,
 }
 
 /// Write the component to the global references directory.
+#[allow(dead_code)]
 pub fn save(component: &ReferenceComponent) -> Result<String, String> {
     let dir = ensure_references_dir()?;
     save_to_dir(component, &dir)

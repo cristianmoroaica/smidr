@@ -20,6 +20,13 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
+/// A per-component build status line parsed from MCP tool output.
+#[derive(Debug, Clone)]
+pub struct BuildProgress {
+    pub component: String,
+    pub status: String,
+}
+
 /// A prompt dispatch recorded instead of executed (see [`Dispatch::Capture`]).
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // read by tests only
@@ -55,6 +62,8 @@ pub struct ClaudeBridge {
     stream_rx: mpsc::Receiver<String>,
     pub tool_tx: mpsc::Sender<ToolCall>,
     pub tool_rx: mpsc::Receiver<ToolCall>,
+    progress_tx: mpsc::Sender<BuildProgress>,
+    progress_rx: mpsc::Receiver<BuildProgress>,
     bg_pid: Arc<AtomicU32>,
 
     // State
@@ -72,6 +81,7 @@ impl ClaudeBridge {
         let (bg_tx, bg_rx) = mpsc::channel::<BackgroundResult>();
         let (stream_tx, stream_rx) = mpsc::channel::<String>();
         let (tool_tx, tool_rx) = mpsc::channel::<ToolCall>();
+        let (progress_tx, progress_rx) = mpsc::channel::<BuildProgress>();
         let bg_pid = Arc::new(AtomicU32::new(0));
 
         ClaudeBridge {
@@ -81,6 +91,8 @@ impl ClaudeBridge {
             stream_rx,
             tool_tx,
             tool_rx,
+            progress_tx,
+            progress_rx,
             bg_pid,
             model,
             session_id: None,
@@ -108,6 +120,15 @@ impl ClaudeBridge {
             calls.push(tc);
         }
         calls
+    }
+
+    /// Drain progress_rx via try_recv loop, returning all pending build progress updates.
+    pub fn drain_build_progress(&self) -> Vec<BuildProgress> {
+        let mut updates = Vec::new();
+        while let Ok(bp) = self.progress_rx.try_recv() {
+            updates.push(bp);
+        }
+        updates
     }
 
     /// Non-blocking check for a completed background result.
@@ -148,6 +169,7 @@ impl ClaudeBridge {
         let tx = self.bg_tx.clone();
         let stream_tx = self.stream_tx.clone();
         let tool_tx = self.tool_tx.clone();
+        let progress_tx = self.progress_tx.clone();
         let bg_pid = Arc::clone(&self.bg_pid);
         let phase_name = phase_name.to_string();
         let prompt = prompt.to_string();
@@ -179,6 +201,7 @@ impl ClaudeBridge {
                 if has_mcp { Some(&tool_tx) } else { None },
                 mcp_config.as_deref(),
                 has_mcp,
+                Some(&progress_tx),
             );
             bg_pid.store(0, Ordering::SeqCst);
             match result {
@@ -198,58 +221,6 @@ impl ClaudeBridge {
         });
     }
 
-    /// Spawn a background thread that calls `claude::send_prompt` directly
-    /// (no phase system prompt). Used for `/ref` research.
-    pub fn send_raw_prompt(
-        &mut self,
-        system_prompt: &str,
-        prompt: &str,
-        images: &[PathBuf],
-        result_name: &str,
-    ) {
-        self.busy = BusyState::Thinking;
-        self.streaming_text.clear();
-
-        let model = self.model.clone();
-        let tx = self.bg_tx.clone();
-        let stream_tx = self.stream_tx.clone();
-        let bg_pid = Arc::clone(&self.bg_pid);
-        let system_prompt = system_prompt.to_string();
-        let prompt = prompt.to_string();
-        let images = images.to_vec();
-        let result_name = result_name.to_string();
-
-        if let Dispatch::Capture(ref mut log) = self.dispatch {
-            log.push(CapturedPrompt {
-                phase_name: None,
-                prompt: prompt.clone(),
-                images: images.clone(),
-                ref_context: None,
-                has_mcp: false,
-            });
-            return;
-        }
-
-        std::thread::spawn(move || {
-            let result = claude::send_prompt(
-                &model,
-                &system_prompt,
-                None,
-                &prompt,
-                &images,
-                Some(&stream_tx),
-                Some(&bg_pid),
-                None, // no tool_tx for raw research prompts
-                None, // no MCP config
-                false, // don't disable builtin tools
-            );
-            bg_pid.store(0, Ordering::SeqCst);
-            let _ = tx.send(BackgroundResult::ReferenceResearch {
-                name: result_name,
-                result: result.map(|(response, _sid)| response),
-            });
-        });
-    }
 }
 
 /// Generate an MCP config JSON file for the given phase and return its path.

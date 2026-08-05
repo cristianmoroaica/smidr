@@ -17,6 +17,11 @@ pub struct CodeBlock {
 /// Extract TOML content from Claude's response (for Decompose phase).
 /// Handles both raw TOML and ```toml fenced blocks.
 /// Validates that the extracted content parses as TOML before returning.
+///
+/// No production caller remains after the TUI's `/ref` save flow (the only
+/// caller) was removed in Phase 4 — kept for its unit tests and as a
+/// building block if a reference-save UI path returns.
+#[allow(dead_code)]
 pub fn parse_toml_response(response: &str) -> Result<String, String> {
     // 1. Try to extract from ```toml ... ``` fenced block
     let mut in_toml = false;

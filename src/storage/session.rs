@@ -52,26 +52,6 @@ pub fn create_session(project_path: &Path, name: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
-/// Delete a session directory.
-pub fn delete_session(session_path: &Path) -> Result<(), String> {
-    if session_path.exists() {
-        std::fs::remove_dir_all(session_path)
-            .map_err(|e| format!("Failed to delete session: {e}"))?;
-    }
-    Ok(())
-}
-
-/// Rename a session directory.
-pub fn rename_session(session_path: &Path, new_name: &str) -> Result<PathBuf, String> {
-    let new_path = session_path
-        .parent()
-        .ok_or("Invalid session path")?
-        .join(new_name);
-    std::fs::rename(session_path, &new_path)
-        .map_err(|e| format!("Failed to rename session: {e}"))?;
-    Ok(new_path)
-}
-
 /// Return the status of a session directory (reads PhaseSessionData).
 pub fn session_status(session_path: &Path) -> SessionStatus {
     let json_path = session_path.join("session.json");
@@ -116,23 +96,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let session_path = create_session(tmp.path(), "empty").unwrap();
         assert!(matches!(session_status(&session_path), SessionStatus::Empty));
-    }
-
-    #[test]
-    fn test_delete_session() {
-        let tmp = TempDir::new().unwrap();
-        let session_path = create_session(tmp.path(), "to-delete").unwrap();
-        delete_session(&session_path).unwrap();
-        assert!(!session_path.exists());
-    }
-
-    #[test]
-    fn test_rename_session() {
-        let tmp = TempDir::new().unwrap();
-        let session_path = create_session(tmp.path(), "old-name").unwrap();
-        let new_path = rename_session(&session_path, "new-name").unwrap();
-        assert!(new_path.exists());
-        assert!(!session_path.exists());
     }
 
     #[test]

@@ -128,28 +128,6 @@ pub fn delete_project(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Rename a project.
-pub fn rename_project(old_name: &str, new_name: &str) -> Result<(), String> {
-    let old_path = root_dir().join(old_name);
-    let new_path = root_dir().join(new_name);
-    std::fs::rename(&old_path, &new_path)
-        .map_err(|e| format!("Failed to rename project: {e}"))?;
-
-    // Update project.json
-    let meta_path = new_path.join("project.json");
-    if meta_path.exists() {
-        if let Ok(json) = std::fs::read_to_string(&meta_path) {
-            if let Ok(mut meta) = serde_json::from_str::<ProjectMeta>(&json) {
-                meta.name = new_name.to_string();
-                if let Ok(updated) = serde_json::to_string_pretty(&meta) {
-                    let _ = std::fs::write(&meta_path, updated);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,18 +176,6 @@ mod tests {
             delete_project("ToDelete").unwrap();
             let projects = list_projects().unwrap();
             assert!(!projects.iter().any(|p| p.meta.name == "ToDelete"));
-        });
-    }
-
-    #[test]
-    fn test_rename_project() {
-        with_test_root(|| {
-            ensure_root().unwrap();
-            create_project("OldName", "").unwrap();
-            rename_project("OldName", "NewName").unwrap();
-            let projects = list_projects().unwrap();
-            assert!(projects.iter().any(|p| p.meta.name == "NewName"));
-            assert!(!projects.iter().any(|p| p.meta.name == "OldName"));
         });
     }
 

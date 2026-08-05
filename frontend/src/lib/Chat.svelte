@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { marked } from 'marked';
-  import DOMPurify from 'dompurify';
+  import { renderMarkdown as render } from './markdown';
   import { tick } from 'svelte';
+  import RefPicker from './RefPicker.svelte';
 
   type Message = { role: string; content: string };
   type ToolCall = { name: string; detail: string };
@@ -12,26 +12,51 @@
     toolCalls,
     busy,
     selectedParts,
+    libRefs,
     onSend,
     onCancel,
-    onRemovePart
+    onRemovePart,
+    onAddRef,
+    onRemoveRef
   }: {
     messages: Message[];
     streaming: string;
     toolCalls: ToolCall[];
     busy: boolean;
     selectedParts: string[];
+    libRefs: string[];
     onSend: (text: string) => void;
     onCancel: () => void;
     onRemovePart: (name: string) => void;
+    onAddRef: (slug: string) => void;
+    onRemoveRef: (slug: string) => void;
   } = $props();
 
   let draft = $state('');
   let logEl: HTMLDivElement | undefined = $state();
+  let textareaEl: HTMLTextAreaElement | undefined = $state();
+  let refQuery = $state<string | null>(null);
+  let refPicker: RefPicker | undefined = $state();
 
-  // Model output and tool results are untrusted: sanitize before {@html}.
-  function render(content: string): string {
-    return DOMPurify.sanitize(marked.parse(content, { async: false }) as string);
+  const REF_TRIGGER_RE = /(?:^|\s)\/ref\s*([\w-]*)$/;
+
+  function updateRefTrigger() {
+    const caret = textareaEl?.selectionStart ?? draft.length;
+    const upToCaret = draft.slice(0, caret);
+    const m = REF_TRIGGER_RE.exec(upToCaret);
+    refQuery = m ? m[1] : null;
+  }
+
+  function chooseRef(slug: string) {
+    const caret = textareaEl?.selectionStart ?? draft.length;
+    const upToCaret = draft.slice(0, caret);
+    const m = REF_TRIGGER_RE.exec(upToCaret);
+    if (m) {
+      const matchStart = m.index + (m[0].startsWith(' ') ? 1 : 0);
+      draft = draft.slice(0, matchStart) + draft.slice(caret);
+    }
+    onAddRef(slug);
+    refQuery = null;
   }
 
   function scrollToBottom() {
@@ -54,10 +79,21 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (refQuery !== null && refPicker?.handleKeydown(e)) {
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
+  }
+
+  function onDraftInput() {
+    updateRefTrigger();
+  }
+
+  function dismissRefPicker() {
+    refQuery = null;
   }
 </script>
 
@@ -86,7 +122,7 @@
   </div>
 
   <div class="composer-wrap">
-    {#if selectedParts.length > 0}
+    {#if selectedParts.length > 0 || libRefs.length > 0}
       <div class="chips">
         {#each selectedParts as name}
           <span class="chip">
@@ -96,15 +132,40 @@
             >
           </span>
         {/each}
+        {#each libRefs as slug}
+          <span class="chip ref">
+            {slug}
+            <button
+              class="chip-remove"
+              onclick={() => onRemoveRef(slug)}
+              aria-label="Remove reference {slug}">×</button
+            >
+          </span>
+        {/each}
       </div>
     {/if}
     <div class="composer">
-      <textarea
-        bind:value={draft}
-        onkeydown={onKeydown}
-        placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-        rows="3"
-      ></textarea>
+      <div class="textarea-wrap">
+        {#if refQuery !== null}
+          <div class="ref-picker-anchor">
+            <RefPicker
+              bind:this={refPicker}
+              query={refQuery}
+              onChoose={chooseRef}
+              onDismiss={dismissRefPicker}
+            />
+          </div>
+        {/if}
+        <textarea
+          bind:this={textareaEl}
+          bind:value={draft}
+          onkeydown={onKeydown}
+          oninput={onDraftInput}
+          onclick={updateRefTrigger}
+          placeholder="Type a message... (Enter to send, Shift+Enter for newline, /ref to attach a reference)"
+          rows="3"
+        ></textarea>
+      </div>
       <div class="composer-actions">
         {#if busy}
           <button class="cancel" onclick={onCancel}>Cancel</button>
@@ -225,6 +286,26 @@
     font-size: 0.8rem;
   }
 
+  .chip.ref {
+    background: var(--ref-chip-bg, #3f7d3f);
+  }
+
+  .textarea-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+
+  .ref-picker-anchor {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    margin-bottom: 0.3rem;
+    z-index: 10;
+  }
+
   .chip-remove {
     background: transparent;
     border: none;
@@ -249,7 +330,7 @@
   }
 
   textarea {
-    flex: 1;
+    width: 100%;
     resize: vertical;
     font: inherit;
     padding: 0.5rem;

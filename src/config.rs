@@ -6,8 +6,6 @@ pub struct Config {
     #[serde(default)]
     pub claude: ClaudeConfig,
     #[serde(default)]
-    pub viewer: ViewerConfig,
-    #[serde(default)]
     pub defaults: DefaultsConfig,
 }
 
@@ -15,12 +13,6 @@ pub struct Config {
 pub struct ClaudeConfig {
     #[serde(default)]
     pub model: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ViewerConfig {
-    #[serde(default = "default_viewer")]
-    pub command: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -34,23 +26,18 @@ pub struct DefaultsConfig {
     pub build_timeout: u64,
 }
 
-fn default_viewer() -> String { "f3d".to_string() }
 fn default_output_dir() -> String { ".".to_string() }
 fn default_max_retries() -> u32 { 3 }
 fn default_build_timeout() -> u64 { 60 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { claude: ClaudeConfig::default(), viewer: ViewerConfig::default(), defaults: DefaultsConfig::default() }
+        Self { claude: ClaudeConfig::default(), defaults: DefaultsConfig::default() }
     }
 }
 
 impl Default for ClaudeConfig {
     fn default() -> Self { Self { model: None } }
-}
-
-impl Default for ViewerConfig {
-    fn default() -> Self { Self { command: default_viewer() } }
 }
 
 impl Default for DefaultsConfig {
@@ -111,7 +98,6 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.claude.model, None);
-        assert_eq!(config.viewer.command, "f3d");
         assert_eq!(config.defaults.max_retries, 3);
         assert_eq!(config.defaults.build_timeout, 60);
     }
@@ -129,5 +115,22 @@ build_timeout = 120
         assert_eq!(config.claude.model, Some("sonnet".to_string()));
         assert_eq!(config.defaults.build_timeout, 120);
         assert_eq!(config.defaults.max_retries, 3);
+    }
+
+    /// The `[viewer]` section configured the f3d launcher, which was deleted
+    /// along with the TUI. Config files written before that removal are still
+    /// on disk, so the unknown section must be ignored rather than failing the
+    /// parse and silently dropping the user's other settings.
+    #[test]
+    fn test_parse_toml_ignores_legacy_viewer_section() {
+        let toml_str = r#"
+[claude]
+model = "sonnet"
+
+[viewer]
+command = "f3d"
+"#;
+        let config: Config = toml::from_str(toml_str).expect("legacy [viewer] must not break parsing");
+        assert_eq!(config.claude.model, Some("sonnet".to_string()));
     }
 }

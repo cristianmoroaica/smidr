@@ -653,6 +653,10 @@ def detect_build_dir(rel_path, session_dir):
     label = parts[1] if top == "components" and len(parts) > 2 else top
     return parent, label
 
+def build_progress_line(component, status):
+    """One-line, machine-parsable per-component build status for the Rust bridge."""
+    return f"BUILD_COMPONENT: {component} {status}"
+
 def run_cadquery_build(code, output_dir, session_root=None, label="build"):
     """Execute CadQuery code and export STL+STEP. Returns result dict."""
     import subprocess
@@ -980,6 +984,7 @@ def handle_tool_call(name, arguments, session_dir):
                 )
                 if isinstance(iteration_n, int):
                     build_info += f"\nIteration {iteration_n} exported (iteration_{iteration_n:03d}.glb)."
+                build_info += "\n" + build_progress_line(label, "done")
                 return [{"type": "text", "text": build_info}]
             else:
                 error = result['error']
@@ -996,7 +1001,7 @@ def handle_tool_call(name, arguments, session_dir):
                     hint = "\nHint: CadQuery sketch/wire error. Check that profiles are closed and valid."
                 elif "timed out" in error_lower:
                     hint = "\nHint: Build took too long. Simplify geometry or reduce fillet/chamfer operations."
-                return [{"type": "text", "text": f"File written: {rel_path}\nBuild failed:\n{error[-1500:]}{hint}"}]
+                return [{"type": "text", "text": f"File written: {rel_path}\nBuild failed:\n{error[-1500:]}{hint}\n" + build_progress_line(label, "failed")}]
         return [{"type": "text", "text": f"File written: {rel_path}"}]
 
     if name == "list_references":

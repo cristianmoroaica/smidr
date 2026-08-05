@@ -80,12 +80,10 @@ impl AppCore {
         for det in &detected {
             if det.in_library {
                 self.push_message("system",
-                    &format!("Reference available: {} (use /ref {} to load)", det.name,
-                        reference::slug_from_name(&det.name)));
+                    &format!("Reference available: {} (add it with the /ref picker)", det.name));
             } else {
                 self.push_message("system",
-                    &format!("Detected component: {}. Use /ref {} to research and save.",
-                        det.name, reference::slug_from_name(&det.name)));
+                    &format!("Detected component: {} — not in the reference library.", det.name));
             }
         }
 
@@ -193,28 +191,6 @@ impl AppCore {
     pub(crate) fn undo_component(&mut self) {
         if self.session.undo() {
             self.push_message("system", "Undid last component iteration.");
-            if let Some(meta) = self.session.current_metadata.clone() {
-                let stl_path = self.session.latest_stl_path();
-                let iteration = self.session.iteration();
-                let model_summary = format!(
-                    "{:.1} x {:.1} x {:.1} mm\nIterations: {}\nEngine: {}\nWatertight: {}{}",
-                    meta.dimensions.x, meta.dimensions.y, meta.dimensions.z,
-                    iteration,
-                    meta.engine.as_str(),
-                    if meta.watertight { "yes" } else { "no" },
-                    if meta.features.is_empty() { String::new() } else {
-                        format!("\n\nFeatures:\n{}", meta.features.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"))
-                    }
-                );
-                self.model_summary = model_summary;
-                // Pre-refactor `undo_component` only refreshed the viewer's
-                // working-copy STL — it never called `viewer.show()`. Queue a
-                // refresh-only signal rather than `CoreEvent::BuildArtifact`
-                // (which the TUI treats as "update AND auto-launch").
-                if let Some(src) = stl_path {
-                    self.queue_stl_refresh(src);
-                }
-            }
         } else {
             self.push_message("system", "Nothing to undo.");
         }

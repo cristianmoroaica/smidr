@@ -131,14 +131,6 @@ impl SessionManager {
 
     // -- Build methods (migrated from LegacySession) --
 
-    pub fn temp_dir(&self) -> &Path {
-        &self.temp_dir
-    }
-
-    pub fn iteration(&self) -> u32 {
-        self.iteration
-    }
-
     pub fn build(&mut self, code: &str, engine: Engine) -> BuildResult {
         // Snapshot before build
         self.undo_snapshot = Some(BuildSnapshot {
@@ -208,11 +200,6 @@ impl SessionManager {
         if p.exists() { Some(p) } else { None }
     }
 
-    pub fn export(&self, dest: &Path) -> Result<(), String> {
-        let src = self.latest_stl_path().ok_or("No model to export")?;
-        fs::copy(&src, dest).map_err(|e| format!("Export failed: {e}"))?;
-        Ok(())
-    }
 }
 
 impl Drop for SessionManager {

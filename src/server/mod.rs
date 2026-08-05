@@ -18,6 +18,11 @@ use std::sync::{Arc, Mutex};
 pub struct ServerState {
     pub config: Config,
     pub cores: HashMap<String, AppCore>,
+    /// Project id of the briefing session created from piped stdin at
+    /// startup, if any. Not read by any route yet, but kept so the id is
+    /// discoverable (e.g. for future "resume briefing" UX).
+    #[allow(dead_code)]
+    pub briefing_project: Option<String>,
 }
 
 /// Shared handle passed to axum via `State`.
@@ -56,6 +61,7 @@ impl ServerState {
 pub fn run_blocking(
     config: Config,
     port: u16,
+    briefing: Option<String>,
     on_bound: impl FnOnce(std::net::SocketAddr),
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -64,9 +70,25 @@ pub fn run_blocking(
         .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
 
     runtime.block_on(async move {
+        let mut cores = HashMap::new();
+        let mut briefing_project = None;
+
+        if let Some(content) = briefing {
+            let core = AppCore::new(config.clone(), Some(content))?;
+            let project_id = core
+                .session_dir()
+                .and_then(|d| d.parent())
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or("briefing session has no project directory")?;
+            cores.insert(project_id.clone(), core);
+            briefing_project = Some(project_id);
+        }
+
         let state: SharedState = Arc::new(Mutex::new(ServerState {
             config,
-            cores: HashMap::new(),
+            cores,
+            briefing_project,
         }));
 
         let app = routes::router(state);

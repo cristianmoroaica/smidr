@@ -14,6 +14,7 @@ pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{id}", axum::routing::delete(delete_project))
+        .route("/api/refs", get(list_refs))
         .with_state(state.clone())
         // Task 2.2: WebSocket session channel, defined in `server::ws`.
         .merge(crate::server::ws::router(state.clone()))
@@ -81,6 +82,35 @@ async fn list_projects(State(_state): State<SharedState>) -> Response {
             }
         })
         .collect();
+
+    Json(summaries).into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct RefSummary {
+    slug: String,
+    name: String,
+    category: String,
+}
+
+/// `GET /api/refs` — lists the reference library the same way the (removed)
+/// TUI `/ref list` command did, so the frontend's ref picker (Task 4.1) has
+/// something to autocomplete against.
+async fn list_refs(State(_state): State<SharedState>) -> Response {
+    let library = match crate::reference::load_library() {
+        Ok(l) => l,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+
+    let mut summaries: Vec<RefSummary> = library
+        .into_iter()
+        .map(|(comp, slug)| RefSummary {
+            slug,
+            name: comp.identity.name,
+            category: comp.identity.category,
+        })
+        .collect();
+    summaries.sort_by(|a, b| a.slug.cmp(&b.slug));
 
     Json(summaries).into_response()
 }

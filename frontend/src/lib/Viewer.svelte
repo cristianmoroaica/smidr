@@ -8,6 +8,7 @@
     iterations,
     viewing,
     selectedParts,
+    failedComponents,
     onPartSelected,
     onPartDeselected
   }: {
@@ -15,6 +16,7 @@
     iterations: number[];
     viewing: number | null;
     selectedParts: string[];
+    failedComponents: string[];
     onPartSelected: (name: string) => void;
     onPartDeselected: (name: string) => void;
   } = $props();
@@ -28,6 +30,44 @@
 
   const HOVER_COLOR = 0x66aaff;
   const SELECT_COLOR = 0xffaa33;
+  const DIFF_COLOR = 0xffcc00;
+  const FAILED_COLOR = 0xff3333;
+  const GHOST_OPACITY = 0.25;
+
+  type Manifest = {
+    components: { name: string; bbox: [number[], number[]]; mesh_hash: string }[];
+    dimensions: Record<string, number>;
+  };
+
+  // --- Toolbar toggle state ---
+  let ghostEnabled = $state(false);
+  let measureEnabled = $state(false);
+  let dimensionsEnabled = $state(false);
+  let ghostNote = $state<string | null>(null);
+  let changedComponents = $state<Set<string>>(new Set());
+  let dimensionsData = $state<Record<string, number> | null>(null);
+  let dimensionsError = $state(false);
+  let dimensionsLoading = $state(false);
+
+  // Keyed by `${projectId}:${iteration}` so a project switch can't serve a
+  // stale project's cached dimensions.
+  const dimensionsCache = new Map<string, Record<string, number>>();
+  let dimensionsLoadGeneration = 0;
+
+  let ghostGroup: THREE.Group | undefined;
+  let ghostLoadGeneration = 0;
+
+  // Model bounding-sphere radius (mm), refreshed each time a model is framed.
+  // Drives measure-marker size so markers are visible at real model scale.
+  let modelRadius = 1;
+
+  let measureLine: THREE.Line | undefined;
+  let measureMarkers: THREE.Mesh[] = [];
+  let measurePointA: THREE.Vector3 | null = null;
+  let measureLabel = $state<{ x: number; y: number; text: string } | null>(null);
+  // Dedup key for the last rendered label so the rAF loop doesn't reassign
+  // `measureLabel` (and force a Svelte update) every frame while static.
+  let measureLabelKey: string | null = null;
 
   type OriginalMaterial = THREE.Material | THREE.Material[];
 
@@ -63,9 +103,22 @@
     return iterations[iterations.length - 1];
   }
 
-  function iterationUrl(n: number): string {
+  function iterationUrl(project: string, n: number): string {
     const padded = String(n).padStart(3, '0');
-    return `/api/artifacts/${encodeURIComponent(projectId)}/iteration_${padded}.glb`;
+    return `/api/artifacts/${encodeURIComponent(project)}/iteration_${padded}.glb`;
+  }
+
+  function manifestUrl(project: string, n: number): string {
+    const padded = String(n).padStart(3, '0');
+    return `/api/artifacts/${encodeURIComponent(project)}/iteration_${padded}.manifest.json`;
+  }
+
+  function previousIteration(n: number): number | null {
+    let best: number | null = null;
+    for (const it of iterations) {
+      if (it < n && (best === null || it > best)) best = it;
+    }
+    return best;
   }
 
   // Walk up from the intersected object to the nearest mesh, then return the
@@ -147,8 +200,12 @@
   function refreshTint(name: string) {
     const meshes = meshesForName(name);
     for (const mesh of meshes) {
-      if (selectedParts.includes(name)) {
+      if (failedComponents.includes(name)) {
+        applyTint(mesh, FAILED_COLOR);
+      } else if (selectedParts.includes(name)) {
         applyTint(mesh, SELECT_COLOR);
+      } else if (changedComponents.has(name)) {
+        applyTint(mesh, DIFF_COLOR);
       } else if (hoveredMesh && findMeshRoot(hoveredMesh)?.name === name) {
         applyTint(mesh, HOVER_COLOR);
       } else {
@@ -237,6 +294,12 @@
     raycaster.setFromCamera(pointerNdc, camera);
     const hits = raycaster.intersectObjects(modelGroup.children, true);
     if (hits.length === 0) return;
+
+    if (measureEnabled) {
+      handleMeasureClick(hits[0].point);
+      return;
+    }
+
     const found = findMeshRoot(hits[0].object);
     if (!found) return;
 
@@ -246,6 +309,94 @@
       onPartSelected(found.name);
     }
     // Actual tint is reconciled reactively once `selectedParts` updates.
+  }
+
+  function disposeMeasure() {
+    if (measureLine) {
+      scene?.remove(measureLine);
+      measureLine.geometry.dispose();
+      (measureLine.material as THREE.Material).dispose();
+      measureLine = undefined;
+    }
+    for (const marker of measureMarkers) {
+      scene?.remove(marker);
+      marker.geometry.dispose();
+      (marker.material as THREE.Material).dispose();
+    }
+    measureMarkers = [];
+    measurePointA = null;
+    measureLabel = null;
+    measureLabelKey = null;
+  }
+
+  function makeMeasureMarker(point: THREE.Vector3): THREE.Mesh {
+    // Scale the marker to the model so it's actually visible: a fixed
+    // 0.01-unit radius is imperceptible against a part with a bounding
+    // radius of tens of millimetres.
+    const radius = Math.min(Math.max(modelRadius * 0.01, 0.02), modelRadius * 0.2 || 0.02);
+    const geo = new THREE.SphereGeometry(radius, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(point);
+    mesh.renderOrder = 999;
+    return mesh;
+  }
+
+  function updateMeasureLabel() {
+    if (!measureLine || !camera || !renderer || !measurePointA) return;
+    const positions = measureLine.geometry.getAttribute('position');
+    const a = new THREE.Vector3(positions.getX(0), positions.getY(0), positions.getZ(0));
+    const b = new THREE.Vector3(positions.getX(1), positions.getY(1), positions.getZ(1));
+    const dist = a.distanceTo(b);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const projected = mid.clone().project(camera);
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = rect.left + ((projected.x + 1) / 2) * rect.width;
+    const y = rect.top + ((-projected.y + 1) / 2) * rect.height;
+    // Behind the camera, project() returns mirrored NDC (z > 1); also hide
+    // once the point falls outside the canvas rect entirely.
+    const behind = projected.z > 1;
+    const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    if (behind || !inside) {
+      if (measureLabelKey !== null) {
+        measureLabelKey = null;
+        measureLabel = null;
+      }
+      return;
+    }
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+    const key = `${rx},${ry},${dist.toFixed(2)}`;
+    if (key === measureLabelKey) return; // camera unchanged; skip the rAF-rate write
+    measureLabelKey = key;
+    measureLabel = { x: rx, y: ry, text: `${dist.toFixed(2)} mm` };
+  }
+
+  function handleMeasureClick(point: THREE.Vector3) {
+    if (!scene) return;
+    if (measurePointA && measureLine) {
+      // Third click: clear and start over.
+      disposeMeasure();
+      return;
+    }
+    if (!measurePointA) {
+      measurePointA = point.clone();
+      const marker = makeMeasureMarker(point);
+      measureMarkers.push(marker);
+      scene.add(marker);
+      return;
+    }
+    // Second click: draw the line.
+    const marker = makeMeasureMarker(point);
+    measureMarkers.push(marker);
+    scene.add(marker);
+
+    const geometry = new THREE.BufferGeometry().setFromPoints([measurePointA, point]);
+    const material = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false });
+    measureLine = new THREE.Line(geometry, material);
+    measureLine.renderOrder = 1000;
+    scene.add(measureLine);
+    updateMeasureLabel();
   }
 
   function disposeModelGroup(group: THREE.Group) {
@@ -278,6 +429,7 @@
     if (box.isEmpty()) return;
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 0.001);
+    modelRadius = radius;
     const dist = radius * 2.5;
     camera.near = Math.max(radius / 100, 0.001);
     camera.far = dist * 4 + radius * 10;
@@ -288,15 +440,150 @@
     controls.update();
   }
 
-  async function loadIteration(n: number) {
+  function disposeGhostGroup() {
+    if (!ghostGroup) return;
+    if (scene) scene.remove(ghostGroup);
+    disposeModelGroupMaterials(ghostGroup);
+    ghostGroup = undefined;
+  }
+
+  // Like disposeModelGroup, but doesn't consult originalMaterials (ghost
+  // meshes never get tinted/selected, so there's nothing stashed for them).
+  function disposeModelGroupMaterials(group: THREE.Group) {
+    const matsToDispose = new Set<THREE.Material>();
+    group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        const mat = obj.material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m) => matsToDispose.add(m));
+        } else {
+          matsToDispose.add(mat);
+        }
+      }
+    });
+    matsToDispose.forEach((m) => m.dispose());
+  }
+
+  async function fetchManifest(project: string, n: number): Promise<Manifest | null> {
+    try {
+      const res = await fetch(manifestUrl(project, n));
+      if (!res.ok) return null;
+      return (await res.json()) as Manifest;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadGhost(project: string, n: number) {
+    // Bump the generation FIRST so any in-flight load (including one that
+    // would otherwise resolve after an early return below) is invalidated.
+    const gen = ++ghostLoadGeneration;
+    ghostNote = null;
+    changedComponents = new Set();
+    disposeGhostGroup();
+
+    const p = previousIteration(n);
+    if (p === null) {
+      ghostNote = 'no previous iteration';
+      return;
+    }
+
+    try {
+      const [currentManifest, prevManifest] = await Promise.all([
+        fetchManifest(project, n),
+        fetchManifest(project, p)
+      ]);
+      if (gen !== ghostLoadGeneration) return;
+      if (!currentManifest || !prevManifest) {
+        ghostNote = 'diff unavailable';
+        return;
+      }
+
+      const prevHashes = new Map(prevManifest.components.map((c) => [c.name, c.mesh_hash]));
+      const changed = new Set<string>();
+      for (const c of currentManifest.components) {
+        const prevHash = prevHashes.get(c.name);
+        if (prevHash === undefined || prevHash !== c.mesh_hash) {
+          changed.add(c.name);
+        }
+      }
+
+      const loader = new GLTFLoader();
+      const gltf = await loader.loadAsync(iterationUrl(project, p));
+      if (gen !== ghostLoadGeneration) return;
+
+      const group = gltf.scene;
+      group.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          const ghostMats = mats.map((m) => {
+            const clone = m.clone();
+            clone.transparent = true;
+            clone.opacity = GHOST_OPACITY;
+            clone.depthWrite = false;
+            return clone;
+          });
+          const prevMats = obj.material;
+          obj.material = Array.isArray(obj.material) ? ghostMats : ghostMats[0];
+          if (Array.isArray(prevMats)) {
+            prevMats.forEach((m) => m.dispose());
+          } else {
+            prevMats.dispose();
+          }
+          obj.raycast = () => {};
+        }
+      });
+
+      scene?.add(group);
+      ghostGroup = group;
+      changedComponents = changed;
+      syncAllTints();
+    } catch {
+      if (gen !== ghostLoadGeneration) return;
+      ghostNote = 'diff unavailable';
+    }
+  }
+
+  async function loadDimensions(project: string, n: number) {
+    const cacheKey = `${project}:${n}`;
+    if (dimensionsCache.has(cacheKey)) {
+      dimensionsData = dimensionsCache.get(cacheKey)!;
+      dimensionsError = false;
+      dimensionsLoading = false;
+      return;
+    }
+    const gen = ++dimensionsLoadGeneration;
+    // Drop the previous iteration's values before awaiting: the card must
+    // never show a stale measurement for the iteration now being viewed.
+    dimensionsData = null;
+    dimensionsError = false;
+    dimensionsLoading = true;
+    const manifest = await fetchManifest(project, n);
+    if (gen !== dimensionsLoadGeneration) return; // superseded by a newer request
+    dimensionsLoading = false;
+    if (manifest && manifest.dimensions) {
+      dimensionsCache.set(cacheKey, manifest.dimensions);
+      dimensionsData = manifest.dimensions;
+      dimensionsError = false;
+    } else {
+      // Do not negative-cache: a transient failure should not permanently
+      // pin "no dimensions recorded" for this iteration.
+      dimensionsData = null;
+      dimensionsError = true;
+    }
+  }
+
+  async function loadIteration(project: string, n: number) {
     if (!scene) return;
     const gen = ++loadGeneration;
     const loader = new GLTFLoader();
     try {
-      const gltf = await loader.loadAsync(iterationUrl(n));
+      const gltf = await loader.loadAsync(iterationUrl(project, n));
       if (gen !== loadGeneration) return; // superseded by a newer request
 
       clearHover();
+      disposeMeasure();
       const previous = modelGroup;
       modelGroup = gltf.scene;
       scene.add(modelGroup);
@@ -361,6 +648,7 @@
     function animate() {
       rafId = requestAnimationFrame(animate);
       controls?.update();
+      if (measureLine) updateMeasureLabel();
       if (renderer && scene && camera) renderer.render(scene, camera);
     }
     animate();
@@ -381,6 +669,8 @@
       controls?.dispose();
       if (modelGroup) disposeModelGroup(modelGroup);
       originalMaterials.clear();
+      disposeGhostGroup();
+      disposeMeasure();
       renderer?.dispose();
       renderer = undefined;
       scene = undefined;
@@ -393,7 +683,66 @@
       lastLoadedProject = null;
       pressIsCandidate = false;
       loadGeneration = 0;
+      ghostLoadGeneration = 0;
+      dimensionsLoadGeneration = 0;
+      changedComponents = new Set();
+      ghostNote = null;
+      dimensionsData = null;
+      dimensionsError = false;
+      dimensionsLoading = false;
+      measureLabelKey = null;
     };
+  });
+
+  const currentIteration = $derived(effectiveIteration());
+
+  // Diff ghost: load/dispose the ghost group and recompute changed
+  // components whenever the toggle or the effective iteration changes.
+  $effect(() => {
+    if (!ghostEnabled) {
+      // Invalidate any in-flight loadGhost so it can't add its group /
+      // diff tints after the toggle has already been switched off.
+      ++ghostLoadGeneration;
+      disposeGhostGroup();
+      ghostNote = null;
+      if (changedComponents.size > 0) {
+        changedComponents = new Set();
+        syncAllTints();
+      }
+      return;
+    }
+    const n = currentIteration;
+    // Read projectId synchronously (not just inside an awaited helper) so
+    // Svelte registers it as a dependency and a project switch re-runs this.
+    const project = projectId;
+    if (n === null) return;
+    loadGhost(project, n);
+  });
+
+  // Measure mode: clear any in-progress measurement when the mode is
+  // switched off.
+  $effect(() => {
+    if (!measureEnabled) {
+      disposeMeasure();
+    }
+  });
+
+  // Dimensions overlay: fetch (with per-iteration caching) whenever enabled
+  // or the effective iteration changes.
+  $effect(() => {
+    if (!dimensionsEnabled) return;
+    const n = currentIteration;
+    // Read projectId synchronously so a project switch is a tracked
+    // dependency, not just a value read after an await inside the helper.
+    const project = projectId;
+    if (n === null) {
+      ++dimensionsLoadGeneration;
+      dimensionsData = null;
+      dimensionsError = false;
+      dimensionsLoading = false;
+      return;
+    }
+    loadDimensions(project, n);
   });
 
   $effect(() => {
@@ -412,19 +761,69 @@
     }
     if (!scene) return;
     if (n === lastLoadedIteration && project === lastLoadedProject) return;
-    loadIteration(n);
+    loadIteration(project, n);
   });
 
   // Reconcile mesh tints whenever the parent's selection truth changes
   // (including being cleared after a prompt is sent).
   $effect(() => {
     void selectedParts;
+    void failedComponents;
+    void changedComponents;
     syncAllTints();
   });
 </script>
 
 <div class="viewer" bind:this={containerEl}>
   <canvas bind:this={canvasEl}></canvas>
+
+  <div class="toolbar" class:below-banner={!!loadError}>
+    <button
+      type="button"
+      class:pressed={ghostEnabled}
+      onclick={() => (ghostEnabled = !ghostEnabled)}
+    >
+      Ghost
+    </button>
+    <button
+      type="button"
+      class:pressed={measureEnabled}
+      onclick={() => (measureEnabled = !measureEnabled)}
+    >
+      Measure
+    </button>
+    <button
+      type="button"
+      class:pressed={dimensionsEnabled}
+      onclick={() => (dimensionsEnabled = !dimensionsEnabled)}
+    >
+      Dimensions
+    </button>
+    {#if ghostEnabled && ghostNote}
+      <span class="toolbar-note">{ghostNote}</span>
+    {/if}
+  </div>
+
+  {#if dimensionsEnabled}
+    <div class="dimensions-card" class:below-banner={!!loadError}>
+      <div class="dimensions-title">Dimensions</div>
+      {#if dimensionsLoading}
+        <div class="dimensions-empty">loading…</div>
+      {:else if dimensionsError || !dimensionsData || Object.keys(dimensionsData).length === 0}
+        <div class="dimensions-empty">no dimensions recorded</div>
+      {:else}
+        {#each Object.entries(dimensionsData) as [key, value]}
+          <div class="dimensions-row"><span>{key}</span><span>{value}</span></div>
+        {/each}
+      {/if}
+    </div>
+  {/if}
+
+  {#if measureLabel}
+    <div class="measure-label" style="left: {measureLabel.x}px; top: {measureLabel.y}px;">
+      {measureLabel.text}
+    </div>
+  {/if}
 
   {#if iterations.length === 0}
     <div class="placeholder">No model yet</div>
@@ -479,6 +878,94 @@
     border-radius: 0.3rem;
     font-size: 0.8rem;
     pointer-events: none;
+    z-index: 6;
+  }
+
+  .toolbar {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    pointer-events: auto;
+    z-index: 5;
+  }
+
+  .toolbar.below-banner {
+    top: 3.1rem;
+  }
+
+  .toolbar button {
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 0.3rem;
+    border: 1px solid var(--border, #444);
+    background: var(--button-bg, rgba(43, 45, 49, 0.85));
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .toolbar button.pressed {
+    background: var(--accent, #3d6fe0);
+    border-color: var(--accent, #3d6fe0);
+    color: #fff;
+  }
+
+  .toolbar-note {
+    font-size: 0.7rem;
+    color: var(--muted-fg, #888);
+    background: rgba(0, 0, 0, 0.5);
+    padding: 0.15rem 0.4rem;
+    border-radius: 0.25rem;
+  }
+
+  .dimensions-card {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    max-width: 45%;
+    max-height: 60%;
+    overflow: auto;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    padding: 0.5rem 0.6rem;
+    border-radius: 0.3rem;
+    font-size: 0.75rem;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  .dimensions-card.below-banner {
+    top: 3.1rem;
+  }
+
+  .dimensions-title {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .dimensions-empty {
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .dimensions-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .measure-label {
+    position: fixed;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    pointer-events: none;
+    z-index: 10;
   }
 
   .hover-label {

@@ -34,6 +34,25 @@ struct ClaudeJsonOutput {
 /// Send a prompt to Claude CLI with streaming. Text chunks are sent via
 /// `on_text` as they arrive so the TUI can display them live.
 /// Returns `(full_response_text, captured_session_id)` when complete.
+/// Parse a `BUILD_COMPONENT: <name> <status>` line into `(component, status)`.
+///
+/// Only recognizes lines whose trimmed form starts with the `BUILD_COMPONENT:`
+/// prefix, has exactly two whitespace-separated tokens after it, and whose
+/// status is one of `building`/`done`/`failed`. Anything else returns `None`.
+pub fn parse_build_progress_line(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix("BUILD_COMPONENT:")?;
+    let mut parts = rest.split_whitespace();
+    let component = parts.next()?;
+    let status = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if !matches!(status, "building" | "done" | "failed") {
+        return None;
+    }
+    Some((component.to_string(), status.to_string()))
+}
+
 pub fn send_prompt(
     model: &Option<String>,
     system_prompt: &str,
@@ -45,6 +64,7 @@ pub fn send_prompt(
     on_tool: Option<&std::sync::mpsc::Sender<super::claude_bridge::ToolCall>>,
     mcp_config: Option<&std::path::Path>,
     disable_builtin_tools: bool,
+    on_progress: Option<&std::sync::mpsc::Sender<super::claude_bridge::BuildProgress>>,
 ) -> Result<(String, Option<String>), String> {
     let full_prompt = if image_paths.is_empty() {
         prompt.to_string()
@@ -174,6 +194,40 @@ pub fn send_prompt(
             }
         }
 
+        // Extract tool_result text from user events (MCP tool output) and scan
+        // for BUILD_COMPONENT lines.
+        if event.event_type.as_deref() == Some("user") {
+            if let Some(progress_tx) = on_progress {
+                if let Some(ref msg) = event.message {
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                                continue;
+                            }
+                            let Some(result_content) = block.get("content") else { continue };
+                            let mut texts: Vec<String> = Vec::new();
+                            if let Some(s) = result_content.as_str() {
+                                texts.push(s.to_string());
+                            } else if let Some(arr) = result_content.as_array() {
+                                for item in arr {
+                                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                                        texts.push(t.to_string());
+                                    }
+                                }
+                            }
+                            for text in texts {
+                                for line in text.lines() {
+                                    if let Some((component, status)) = parse_build_progress_line(line) {
+                                        let _ = progress_tx.send(super::claude_bridge::BuildProgress { component, status });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Result event = final
         if event.event_type.as_deref() == Some("result") {
             if event.is_error == Some(true) {
@@ -222,6 +276,7 @@ pub fn send_with_phase_prompt(
     on_tool: Option<&std::sync::mpsc::Sender<super::claude_bridge::ToolCall>>,
     mcp_config: Option<&std::path::Path>,
     disable_builtin_tools: bool,
+    on_progress: Option<&std::sync::mpsc::Sender<super::claude_bridge::BuildProgress>>,
 ) -> Result<(String, Option<String>), String> {
     let mut system_prompt = crate::prompt_builder::load_phase_system_prompt(phase_name)?;
 
@@ -237,7 +292,7 @@ pub fn send_with_phase_prompt(
 
     // If we have a session_id, try resuming first
     if let Some(sid) = session_id {
-        match send_prompt(model, &system_prompt, Some(sid), prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools) {
+        match send_prompt(model, &system_prompt, Some(sid), prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools, on_progress) {
             Ok(result) => return Ok(result),
             Err(e) => {
                 // Check for session expiry indicators
@@ -246,14 +301,14 @@ pub fn send_with_phase_prompt(
                     || lower.contains("invalid session")
                 {
                     // Retry without --resume (fresh session)
-                    return send_prompt(model, &system_prompt, None, prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools);
+                    return send_prompt(model, &system_prompt, None, prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools, on_progress);
                 }
                 return Err(e);
             }
         }
     }
 
-    send_prompt(model, &system_prompt, None, prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools)
+    send_prompt(model, &system_prompt, None, prompt, image_paths, on_text, pid_out, on_tool, mcp_config, disable_builtin_tools, on_progress)
 }
 
 /// Check that the claude CLI is available.
@@ -287,6 +342,7 @@ mod tests {
             Option<&std::sync::mpsc::Sender<crate::claude_bridge::ToolCall>>,
             Option<&std::path::Path>,
             bool,
+            Option<&std::sync::mpsc::Sender<crate::claude_bridge::BuildProgress>>,
         ) -> Result<(String, Option<String>), String> = send_prompt;
     }
 
@@ -301,7 +357,34 @@ mod tests {
             Option<&std::sync::mpsc::Sender<crate::claude_bridge::ToolCall>>,
             Option<&std::path::Path>,
             bool,
+            Option<&std::sync::mpsc::Sender<crate::claude_bridge::BuildProgress>>,
         ) -> Result<(String, Option<String>), String> = send_with_phase_prompt;
+    }
+
+    #[test]
+    fn parse_build_progress_line_accepts_known_statuses() {
+        assert_eq!(
+            parse_build_progress_line("BUILD_COMPONENT: lid done"),
+            Some(("lid".to_string(), "done".to_string()))
+        );
+        assert_eq!(
+            parse_build_progress_line("  BUILD_COMPONENT: base failed  "),
+            Some(("base".to_string(), "failed".to_string()))
+        );
+        assert_eq!(
+            parse_build_progress_line("BUILD_COMPONENT: lid building"),
+            Some(("lid".to_string(), "building".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_build_progress_line_rejects_malformed_lines() {
+        assert_eq!(parse_build_progress_line("BUILD_COMPONENT: lid unknown"), None);
+        assert_eq!(parse_build_progress_line("BUILD_COMPONENT: lid"), None);
+        assert_eq!(parse_build_progress_line("BUILD_COMPONENT: lid done extra"), None);
+        assert_eq!(parse_build_progress_line("BUILD_COMPONENT:"), None);
+        assert_eq!(parse_build_progress_line("not a build line"), None);
+        assert_eq!(parse_build_progress_line(""), None);
     }
 
 }

@@ -117,7 +117,19 @@ fn init_session(state: &SharedState, project_id: &str) -> Result<Value, String> 
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let core = guard.core_for(project_id)?;
     core.set_phase_gate(true);
-    core.open_project_by_id(project_id)?;
+    if core.briefing_pending() {
+        // The briefing session is already open in memory (created from piped
+        // stdin at server startup); re-opening by id would clobber it. Fire
+        // the synthetic first prompt exactly once instead.
+        core.clear_briefing_pending();
+        core.submit_prompt(
+            "Please review the attached conversation and begin extracting spec fields.",
+            &[],
+            &[],
+        );
+    } else {
+        core.open_project_by_id(project_id)?;
+    }
     Ok(snapshot_value(core))
 }
 
@@ -216,6 +228,9 @@ fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {
                     .last()
                     .map(|n| json!({"type": "iteration_added", "n": n}))
             }
+            CoreEvent::BuildProgress { component, status } => {
+                Some(build_progress_value(&component, &status))
+            }
             CoreEvent::Error(message) => Some(json!({"type": "error", "message": message})),
             CoreEvent::ResponseDone => Some(snapshot_value(core)),
         })
@@ -236,11 +251,7 @@ fn snapshot_value(core: &AppCore) -> Value {
         .map(|(role, content)| json!({"role": role, "content": content}))
         .collect();
     let iterations: Vec<u32> = crate::server::artifacts::glb_iterations(core.session_dir());
-    let spec = if core.spec_content().is_empty() {
-        Value::Null
-    } else {
-        Value::String(core.spec_content().to_string())
-    };
+    let spec = spec_value(core);
     json!({
         "type": "snapshot",
         "phase": core.phase().label(),
@@ -251,6 +262,27 @@ fn snapshot_value(core: &AppCore) -> Value {
     })
 }
 
+/// `spec` for the snapshot: prefer the in-memory spec narrative (populated
+/// during a live Spec turn), falling back to what's on disk for a session
+/// that hasn't had a live turn since the process started (restart/reconnect)
+/// — `spec_narrative.md` first, then `goal.md`.
+fn spec_value(core: &AppCore) -> Value {
+    if !core.spec_content().is_empty() {
+        return Value::String(core.spec_content().to_string());
+    }
+    let Some(dir) = core.session_dir() else {
+        return Value::Null;
+    };
+    for name in ["spec_narrative.md", "goal.md"] {
+        if let Ok(content) = std::fs::read_to_string(dir.join(name)) {
+            if !content.is_empty() {
+                return Value::String(content);
+            }
+        }
+    }
+    Value::Null
+}
+
 fn phase_state_value(phase: Phase, approved: bool) -> Value {
     json!({"type": "phase_state", "phase": phase.label(), "approved": approved})
 }
@@ -259,10 +291,8 @@ fn error_msg(message: &str) -> Value {
     json!({"type": "error", "message": message})
 }
 
-/// Serializer for `build_progress` — no producer exists yet (build/refine
-/// per-component progress tracking lands in Phase 4). Kept here so the wire
-/// shape is pinned and ready for that phase to wire up.
-#[allow(dead_code)]
+/// Serializer for `build_progress`. The emitted shape is pinned:
+/// `{"type":"build_progress","component":<str>,"status":<str>}`.
 fn build_progress_value(component: &str, status: &str) -> Value {
     json!({"type": "build_progress", "component": component, "status": status})
 }

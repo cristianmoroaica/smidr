@@ -1,5 +1,6 @@
-//! Shared black-box test harness: spawns the built `mimodel` binary in
-//! `--web` mode against a sandboxed HOME, and exposes its base URL.
+//! Shared black-box test harness: spawns the built `mimodel` binary (the
+//! server is the binary's only mode now) against a sandboxed HOME, and
+//! exposes its base URL.
 
 #![allow(dead_code)]
 
@@ -25,6 +26,14 @@ impl Server {
         let port = self.base.rsplit(':').next().unwrap_or("0");
         format!("ws://127.0.0.1:{port}{path}")
     }
+
+    /// Kill the child and wait for it to exit, returning its status. Used by
+    /// tests that want to assert the process shuts down cleanly (i.e. this
+    /// call returns promptly, never hangs) rather than relying on `Drop`.
+    pub fn wait_for_exit(&mut self) -> std::process::ExitStatus {
+        let _ = self.child.kill();
+        self.child.wait().expect("wait on killed child should not fail")
+    }
 }
 
 pub fn spawn() -> Server {
@@ -32,19 +41,46 @@ pub fn spawn() -> Server {
 }
 
 pub fn spawn_with_env(extra: &[(&str, &str)]) -> Server {
+    spawn_inner(&[], extra, None)
+}
+
+/// Like `spawn_with_env`, but pipes `stdin_text` to the child's stdin (then
+/// closes it) before the listening line is parsed — exercises the
+/// piped-stdin briefing path.
+pub fn spawn_with_env_and_stdin(extra: &[(&str, &str)], stdin_text: &str) -> Server {
+    spawn_inner(&[], extra, Some(stdin_text))
+}
+
+/// Spawns with the deprecated `--web` no-op flag, to keep that flag
+/// exercised as accepted-but-ignored for backward compatibility.
+pub fn spawn_with_web() -> Server {
+    spawn_inner(&["--web"], &[], None)
+}
+
+fn spawn_inner(extra_args: &[&str], extra: &[(&str, &str)], stdin_text: Option<&str>) -> Server {
     let home = tempfile::TempDir::new().expect("tempdir");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mimodel"));
-    cmd.args(["--web", "--port", "0", "--no-browser"])
+    cmd.args(["--port", "0", "--no-browser"])
+        .args(extra_args)
         .env("HOME", home.path())
-        .stdin(Stdio::null())
+        .stdin(if stdin_text.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in extra {
         cmd.env(k, v);
     }
 
-    let mut child = cmd.spawn().expect("failed to spawn mimodel --web");
+    let mut child = cmd.spawn().expect("failed to spawn mimodel");
+
+    if let Some(text) = stdin_text {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("no stdin");
+        stdin.write_all(text.as_bytes()).expect("write stdin");
+        // Dropping `stdin` here closes the pipe, signalling EOF to the
+        // child so it stops waiting for more piped input.
+        drop(stdin);
+    }
 
     let stdout = child.stdout.take().expect("no stdout");
     let mut reader = BufReader::new(stdout);

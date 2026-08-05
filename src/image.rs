@@ -1,8 +1,7 @@
-//! File attachment handling — clipboard paste, drag-and-drop path detection.
+//! File attachment handling — drag-and-drop / pasted path detection.
 //! Supports images (png, jpg, etc.) and PDFs.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"];
 const DOC_EXTENSIONS: &[&str] = &["pdf"];
@@ -18,68 +17,12 @@ fn is_attachment_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a path is an image (not PDF).
-pub fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
 /// Check if a path is a PDF.
 pub fn is_pdf(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase() == "pdf")
         .unwrap_or(false)
-}
-
-/// Grab image from Wayland clipboard via wl-paste.
-pub fn paste_clipboard_image(dest: &Path) -> Result<(), String> {
-    let types = Command::new("wl-paste")
-        .arg("--list-types")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|_| "wl-paste not found. Install wl-clipboard: pacman -S wl-clipboard".to_string())?;
-
-    let types_str = String::from_utf8_lossy(&types.stdout);
-    let has_image = types_str.lines().any(|t| t.starts_with("image/"));
-
-    if !has_image {
-        return Err("No image in clipboard. Copy an image first.".to_string());
-    }
-
-    let mime = if types_str.lines().any(|t| t == "image/png") {
-        "image/png"
-    } else if types_str.lines().any(|t| t == "image/jpeg") {
-        "image/jpeg"
-    } else {
-        types_str
-            .lines()
-            .find(|t| t.starts_with("image/"))
-            .unwrap_or("image/png")
-    };
-
-    if let Some(parent) = dest.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let output = Command::new("wl-paste")
-        .args(["--type", mime, "--no-newline"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("wl-paste failed: {e}"))?;
-
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err("Failed to read image from clipboard".to_string());
-    }
-
-    std::fs::write(dest, &output.stdout)
-        .map_err(|e| format!("Failed to save clipboard image: {e}"))?;
-
-    Ok(())
 }
 
 /// Extract file attachment paths from user input text.
@@ -166,10 +109,6 @@ pub fn extract_attachment_paths(input: &str) -> (String, Vec<PathBuf>) {
 }
 
 /// Expand ~ to home directory.
-pub fn expand_tilde(path: &str) -> String {
-    expand_path(path)
-}
-
 fn expand_path(path: &str) -> String {
     if path.starts_with("~/") {
         if let Some(home) = dirs::home_dir() {

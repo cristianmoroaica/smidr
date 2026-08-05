@@ -17,14 +17,25 @@ echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"t
 echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"hello from fake claude"}'
 "#;
 
-/// Spawn the server with a fake `claude` executable on `PATH` (ahead of the
-/// inherited `PATH`) so `AppCore::submit_prompt` can drive a full turn
-/// without a real Claude CLI or network access. The returned `TempDir` must
-/// stay alive for as long as the server might invoke `claude`.
-fn spawn_with_fake_claude() -> (common::Server, tempfile::TempDir) {
+/// A fake `claude` script that emits a tool_use, then a `user` event carrying
+/// a tool_result whose text contains BUILD_COMPONENT lines for two
+/// components (one done, one failed), then the usual result event.
+const FAKE_CLAUDE_BUILD_PROGRESS_SCRIPT: &str = r#"#!/bin/sh
+echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__mimodel__write_file","input":{"path":"components/lid/code.py"}}]}}'
+echo '{"type":"user","session_id":"fake-1","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"File written: components/lid/code.py\nBuild successful! Dimensions: 1x2x3mm.\nBUILD_COMPONENT: lid done\nBUILD_COMPONENT: base failed"}]}]}}'
+echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"build done"}'
+"#;
+
+/// Write the given fake `claude` script into a fresh temp dir and return the
+/// `PATH` value (fake dir prepended to the inherited `PATH`) that puts it
+/// ahead of any real `claude` on the search path. Shared by every test that
+/// needs `AppCore::submit_prompt` to drive a full turn without a real
+/// Claude CLI or network access. The returned `TempDir` must stay alive for
+/// as long as the server might invoke `claude`.
+fn fake_claude_path_with_script(script: &str) -> (tempfile::TempDir, String) {
     let bin_dir = tempfile::TempDir::new().expect("tempdir");
     let claude_path = bin_dir.path().join("claude");
-    std::fs::write(&claude_path, FAKE_CLAUDE_SCRIPT).expect("write fake claude");
+    std::fs::write(&claude_path, script).expect("write fake claude");
 
     #[cfg(unix)]
     {
@@ -36,8 +47,26 @@ fn spawn_with_fake_claude() -> (common::Server, tempfile::TempDir) {
 
     let inherited = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{}", bin_dir.path().display(), inherited);
+    (bin_dir, path)
+}
+
+/// Write the default fake `claude` executable into a fresh temp dir. See
+/// `fake_claude_path_with_script` for details.
+fn fake_claude_path() -> (tempfile::TempDir, String) {
+    fake_claude_path_with_script(FAKE_CLAUDE_SCRIPT)
+}
+
+/// Spawn the server with a fake `claude` executable running `script` on
+/// `PATH`. See `fake_claude_path_with_script` for details.
+fn spawn_with_fake_claude_script(script: &str) -> (common::Server, tempfile::TempDir) {
+    let (bin_dir, path) = fake_claude_path_with_script(script);
     let server = common::spawn_with_env(&[("PATH", &path)]);
     (server, bin_dir)
+}
+
+/// Spawn the server with the default fake `claude` executable on `PATH`.
+fn spawn_with_fake_claude() -> (common::Server, tempfile::TempDir) {
+    spawn_with_fake_claude_script(FAKE_CLAUDE_SCRIPT)
 }
 
 fn create_project(base: &str, name: &str) -> String {
@@ -234,4 +263,111 @@ fn unknown_project_gets_error_not_a_core() {
         msg["message"].as_str().unwrap_or("").contains("unknown project"),
         "unexpected error payload: {msg}"
     );
+}
+
+/// Piped stdin at startup (the `git diff | mimodel` briefing flow) must
+/// create a project from the briefing content (alongside the default
+/// "Untitled" project `AppCore::new` always seeds), and the FIRST WebSocket
+/// connection to that briefing project must auto-submit the synthetic
+/// "review the briefing" prompt that used to be fired by the (now-deleted)
+/// TUI event loop's first tick. A second connection must see the same
+/// message exactly once — never re-submitted.
+#[test]
+fn briefing_stdin_creates_project_and_first_connect_auto_submits() {
+    let (bin_dir, path) = fake_claude_path();
+    let stdin_text = "User: build me a 40mm bracket.\nAssistant: understood.\n";
+    let server = common::spawn_with_env_and_stdin(&[("PATH", &path)], stdin_text);
+    let _bin_dir = bin_dir; // keep alive for as long as the server might invoke `claude`
+
+    let resp = ureq::get(&format!("{}/api/projects", server.base)).call();
+    let mut resp = resp.expect("list projects should succeed");
+    let projects: Value = resp.body_mut().read_json().unwrap();
+    let projects = projects.as_array().expect("projects is an array");
+    let briefing_projects: Vec<&Value> = projects
+        .iter()
+        .filter(|p| p["id"].as_str() != Some("Untitled"))
+        .collect();
+    assert_eq!(
+        briefing_projects.len(),
+        1,
+        "piped stdin must create exactly one non-default project: {projects:?}"
+    );
+    let project_id = briefing_projects[0]["id"].as_str().expect("project id").to_string();
+
+    const SYNTHETIC_PROMPT: &str =
+        "Please review the attached conversation and begin extracting spec fields.";
+
+    let mut ws = connect(&server, &project_id);
+    let snapshot = read_json(&mut ws);
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["phase"], "Spec");
+    let conversation = snapshot["conversation"].as_array().expect("conversation array");
+    let synthetic_count = conversation
+        .iter()
+        .filter(|m| m["role"] == "user" && m["content"] == SYNTHETIC_PROMPT)
+        .count();
+    assert_eq!(
+        synthetic_count, 1,
+        "first connect must auto-submit the synthetic briefing prompt exactly once: {conversation:?}"
+    );
+
+    // A second connection must NOT re-submit — briefing_pending was already
+    // cleared by the first connect.
+    let mut ws2 = connect(&server, &project_id);
+    let snapshot2 = read_json(&mut ws2);
+    let conversation2 = snapshot2["conversation"].as_array().expect("conversation array");
+    let synthetic_count2 = conversation2
+        .iter()
+        .filter(|m| m["role"] == "user" && m["content"] == SYNTHETIC_PROMPT)
+        .count();
+    assert_eq!(
+        synthetic_count2, 1,
+        "second connect must see the synthetic prompt exactly once, not re-submitted: {conversation2:?}"
+    );
+}
+
+/// MCP tool output arrives on `user` events as `tool_result` blocks. Each
+/// `BUILD_COMPONENT: <name> <status>` line inside that text must become a
+/// pinned `{"type":"build_progress",...}` WS message.
+#[test]
+fn build_progress_lines_become_build_progress_messages() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_BUILD_PROGRESS_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "build it",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut saw_lid_done = false;
+    let mut saw_base_failed = false;
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+
+    while !(saw_lid_done && saw_base_failed) {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see both build_progress messages within {MAX_FRAMES} frames");
+
+        let msg = read_json(&mut ws);
+        if msg["type"] == "build_progress" {
+            if msg["component"] == "lid" && msg["status"] == "done" {
+                saw_lid_done = true;
+            }
+            if msg["component"] == "base" && msg["status"] == "failed" {
+                saw_base_failed = true;
+            }
+        }
+        if msg["type"] == "snapshot" && frames > 1 {
+            // Finalizing snapshot arrived; keep looping only if we haven't
+            // seen both messages yet (they should have arrived by now).
+            if !(saw_lid_done && saw_base_failed) {
+                panic!("finalizing snapshot arrived before both build_progress messages: seen lid={saw_lid_done} base={saw_base_failed}");
+            }
+        }
+    }
 }

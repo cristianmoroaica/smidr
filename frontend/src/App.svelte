@@ -3,6 +3,7 @@
   import Stepper from './lib/Stepper.svelte';
   import Viewer from './lib/Viewer.svelte';
   import Timeline from './lib/Timeline.svelte';
+  import SpecPanel from './lib/SpecPanel.svelte';
   import { connectSession, type ServerMsg, type SessionClient } from './lib/ws';
 
   type Message = { role: string; content: string };
@@ -23,8 +24,9 @@
   let lastError = $state<string | null>(null);
   let busy = $state(false);
   let selectedParts = $state<string[]>([]);
+  let libRefs = $state<string[]>([]);
   let viewing = $state<number | null>(null);
-  let specOpen = $state(false);
+  let failedComponents = $state<string[]>([]);
 
   let client: SessionClient | null = null;
 
@@ -39,6 +41,7 @@
         streaming = '';
         toolCalls = [];
         busy = false;
+        failedComponents = [];
         break;
       case 'stream_delta':
         busy = true;
@@ -59,6 +62,7 @@
           iterations = [...iterations, m.n].sort((a, b) => a - b);
           viewing = null;
         }
+        failedComponents = [];
         break;
       case 'build_progress':
         // Surfaced via tool-call-style row so it's visible in the log.
@@ -67,6 +71,13 @@
           { name: `build: ${m.component}`, detail: m.status }
         ];
         if (m.status !== 'building') busy = false;
+        if (m.status === 'failed') {
+          if (!failedComponents.includes(m.component)) {
+            failedComponents = [...failedComponents, m.component];
+          }
+        } else {
+          failedComponents = failedComponents.filter((c) => c !== m.component);
+        }
         break;
       case 'error':
         lastError = m.message;
@@ -118,8 +129,9 @@
     if (!client) return;
     busy = true;
     conversation = [...conversation, { role: 'user', content: text }];
-    client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [] });
+    client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [...libRefs] });
     selectedParts = [];
+    libRefs = [];
   }
 
   function onPartSelected(name: string) {
@@ -130,6 +142,16 @@
 
   function onRemovePart(name: string) {
     selectedParts = selectedParts.filter((p) => p !== name);
+  }
+
+  function onAddRef(slug: string) {
+    if (!libRefs.includes(slug)) {
+      libRefs = [...libRefs, slug];
+    }
+  }
+
+  function onRemoveRef(slug: string) {
+    libRefs = libRefs.filter((r) => r !== slug);
   }
 
   function onSelectIteration(n: number | null) {
@@ -187,6 +209,7 @@
           {iterations}
           {viewing}
           {selectedParts}
+          {failedComponents}
           onPartSelected={onPartSelected}
           onPartDeselected={onRemovePart}
         />
@@ -199,20 +222,14 @@
           {toolCalls}
           {busy}
           {selectedParts}
+          {libRefs}
           {onSend}
           {onCancel}
           {onRemovePart}
+          {onAddRef}
+          {onRemoveRef}
         />
-        <div class="spec-area">
-          <button class="spec-toggle" onclick={() => (specOpen = !specOpen)}>
-            {specOpen ? '▾' : '▸'} Spec
-          </button>
-          {#if specOpen}
-            <div class="spec-content">
-              <pre>{spec ?? 'No spec yet'}</pre>
-            </div>
-          {/if}
-        </div>
+        <SpecPanel {spec} {phase} {approved} {onApprove} />
       </div>
     </div>
   {/if}
@@ -260,35 +277,10 @@
     min-height: 0;
   }
 
-  .spec-area {
-    flex: 0 0 auto;
+  .right :global(.spec-panel) {
+    flex: 0 1 40%;
     border-top: 1px solid var(--border, #333);
-    max-height: 40%;
-    display: flex;
-    flex-direction: column;
     min-height: 0;
-  }
-
-  .spec-toggle {
-    font: inherit;
-    text-align: left;
-    padding: 0.5rem 0.75rem;
-    background: var(--button-bg, #2b2d31);
-    border: none;
-    color: inherit;
-    cursor: pointer;
-  }
-
-  .spec-content {
-    overflow-y: auto;
-    padding: 0.5rem 0.75rem;
-    min-height: 0;
-  }
-
-  .spec-content pre {
-    white-space: pre-wrap;
-    margin: 0;
-    font-size: 0.85rem;
   }
 
   .error-banner {
