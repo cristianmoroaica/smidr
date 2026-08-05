@@ -60,6 +60,8 @@ def _export_build_iteration(session_dir, label, stl_path, dims_str):
         if not comps:
             return None
 
+        comps = glb_export.apply_placements(comps, glb_export.load_placements(session_dir))
+
         spec_dims = {}
         if dims_str:
             parts = str(dims_str).lower().split("x")
@@ -244,6 +246,27 @@ IMPORT_STEP_TOOL = {
 
 # ── Phase-specific tool definitions ──
 
+REQUEST_PHASE_CHANGE_TOOL = {
+    "name": "request_phase_change",
+    "description": (
+        "Ask the user to switch the session to a different phase when the work you need "
+        "to do belongs there. The user sees a consent dialog and decides — you cannot "
+        "switch phases yourself."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "enum": ["spec", "build", "refine"],
+                "description": "Phase the work belongs in"
+            },
+            "reason": {"type": "string", "description": "Short reason shown to the user"}
+        },
+        "required": ["target", "reason"]
+    }
+}
+
 SPEC_TOOLS = [
     {
         "name": "ask_question",
@@ -288,6 +311,7 @@ SPEC_TOOLS = [
             "required": []
         }
     },
+    REQUEST_PHASE_CHANGE_TOOL,
 ]
 
 BUILD_TOOLS = [
@@ -331,6 +355,7 @@ BUILD_TOOLS = [
     LIST_REFERENCES_TOOL,
     READ_REFERENCE_TOOL,
     FETCH_URL_TOOL,
+    REQUEST_PHASE_CHANGE_TOOL,
 ]
 
 REFINE_TOOLS = [
@@ -376,6 +401,7 @@ REFINE_TOOLS = [
     LIST_REFERENCES_TOOL,
     READ_REFERENCE_TOOL,
     FETCH_URL_TOOL,
+    REQUEST_PHASE_CHANGE_TOOL,
 ]
 
 PHASE_TOOLS = {
@@ -698,6 +724,23 @@ def run_cadquery_build(code, output_dir, session_root=None, label="build"):
     if building_flag:
         open(building_flag, "w").close()
 
+    # An assembly-dir build is the sole source of placements.json. Set the
+    # previous file aside before this build executes: on SUCCESS it stays
+    # gone unless the epilogue wrote a fresh one, so an assembly build whose
+    # code no longer produces a cq.Assembly correctly signals "no placement
+    # data"; on FAILURE it is restored, so a transient error in the agent's
+    # assembly code doesn't collapse the viewer (still showing the last good
+    # iteration) back to parts-at-origin.
+    placements_prev = None
+    if label == "assembly" and session_root:
+        placements_current = os.path.join(session_root, "assembly", "placements.json")
+        try:
+            os.replace(placements_current, placements_current + ".prev")
+            placements_prev = placements_current + ".prev"
+        except OSError:
+            pass
+
+    build_ok = False
     try:
         # Write code.py so it can be read back later
         code_path = os.path.join(output_dir, "code.py")
@@ -716,9 +759,79 @@ _SESSION_DIR = "{session_root or output_dir}"
 # ── Auto-export + spatial analysis ──
 import cadquery as cq
 from collections import Counter
+
+# Capture cq.Assembly placements (if any) so the user's GLB viewer can show
+# the true assembled layout, not just parts stacked at local-coordinate origin.
+try:
+    _assembly = None
+    _is_assembly_build = {label!r} == "assembly"
+    if isinstance(result, cq.Assembly):
+        # Always unwrap, whatever the label: the STL/STEP export lines below
+        # cannot handle an Assembly.
+        _assembly = result
+        result = result.toCompound()
+    elif _is_assembly_build:
+        # Multiple Assembly instances can exist (e.g. a sub-assembly built
+        # before the top-level one). Prefer the one with the most direct
+        # children; break ties by preferring the one defined last, since
+        # that's typically the outermost/final assembly.
+        _candidates = [
+            (len(_v.children), _idx, _v)
+            for _idx, _v in enumerate(globals().values())
+            if isinstance(_v, cq.Assembly)
+        ]
+        if _candidates:
+            _assembly = max(_candidates)[2]
+    # Gated on the build label so only an assembly-dir build ever writes
+    # placements.json: a component / refinement / imported build whose code
+    # happens to construct a cq.Assembly must not clobber the real assembly
+    # placements (nothing would ever clear them).
+    # NOTE: also gated on the interpolated session_root (not _SESSION_DIR
+    # above, which falls back to output_dir) so nothing is written when
+    # session_root is None — do not "fix" this to use _SESSION_DIR, or a
+    # build with session_root=None would create
+    # <output_dir>/assembly/assembly/placements.json.
+    if _assembly is not None and _is_assembly_build and "{session_root or ''}":
+        def _mat4_from_loc(_loc):
+            _trsf = _loc.wrapped.Transformation()
+            return [[_trsf.Value(_i, _j) for _j in range(1, 5)] for _i in range(1, 4)] + [[0.0, 0.0, 0.0, 1.0]]
+
+        def _mat4_identity():
+            return [[1.0 if _r == _c else 0.0 for _c in range(4)] for _r in range(4)]
+
+        def _mat4_mul(_a, _b):
+            return [[sum(_a[_r][_k] * _b[_k][_c] for _k in range(4)) for _c in range(4)] for _r in range(4)]
+
+        # Recursively walk the assembly tree so nested sub-assemblies
+        # (assy.add(sub_assy, name=...)) contribute their components' world
+        # transforms. A node emits a placement whenever it carries its own
+        # geometry (`obj`), NOT only at leaves: cq.Assembly(base, name=...)
+        # roots and mid-tree nodes with both obj and children are mainstream
+        # CadQuery idioms, and skipping them leaves those meshes at identity.
+        # The walk starts at _assembly itself so a root-level obj is covered.
+        def _walk(_node, _parent_mat, _out):
+            _node_mat = _mat4_from_loc(_node.loc) if getattr(_node, "loc", None) is not None else _mat4_identity()
+            _world_mat = _mat4_mul(_parent_mat, _node_mat)
+            if getattr(_node, "obj", None) is not None:
+                _out.append({{"name": _node.name, "matrix": [_val for _row in _world_mat for _val in _row]}})
+            for _child in _node.children:
+                _walk(_child, _world_mat, _out)
+
+        _placements = []
+        _walk(_assembly, _mat4_identity(), _placements)
+
+        if _placements:
+            _placements_dir = _os.path.join("{session_root or ''}", "assembly")
+            _os.makedirs(_placements_dir, exist_ok=True)
+            with open(_os.path.join(_placements_dir, "placements.json"), "w") as _pf:
+                import json as _json
+                _json.dump({{"placements": _placements}}, _pf)
+except Exception:
+    pass
+
 cq.exporters.export(result, "{stl_path}")
 cq.exporters.export(result, "{step_path}")
-solid = result.val()
+solid = result.val() if hasattr(result, "val") else result
 bb = solid.BoundingBox()
 print(f"DIMS:{{bb.xlen:.2f}}x{{bb.ylen:.2f}}x{{bb.zlen:.2f}}")
 # Spatial position (min/max coordinates)
@@ -730,8 +843,8 @@ try:
 except:
     pass
 # Topology for validation
-faces = result.faces().vals()
-edges = result.edges().vals()
+faces = result.faces().vals() if isinstance(result, cq.Workplane) else solid.Faces()
+edges = result.edges().vals() if isinstance(result, cq.Workplane) else solid.Edges()
 ft = Counter(f.geomType() for f in faces)
 ft_str = ", ".join(f"{{k}}:{{v}}" for k, v in sorted(ft.items()))
 print(f"TOPO:{{len(faces)}}f {{len(edges)}}e | {{ft_str}}")
@@ -798,6 +911,7 @@ if cyls:
                 if os.path.exists(src):
                     shutil.copy2(src, os.path.join(session_root, name))
 
+        build_ok = True
         return {"success": True, "dimensions": dims, "topology": topo, "holes": holes, "bbox": bbox, "center": center, "stl_path": stl_path, "step_path": step_path}
 
     except subprocess.TimeoutExpired:
@@ -805,6 +919,15 @@ if cyls:
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:
+        if placements_prev:
+            try:
+                if build_ok:
+                    os.remove(placements_prev)
+                else:
+                    # Restore, overwriting any partial write from the failed run.
+                    os.replace(placements_prev, placements_current)
+            except OSError:
+                pass
         if building_flag and os.path.exists(building_flag):
             os.remove(building_flag)
 
@@ -905,6 +1028,11 @@ def handle_tool_call(name, arguments, session_dir):
         if opts:
             text += f" (options: {', '.join(str(o) for o in opts)})"
         return [{"type": "text", "text": text}]
+
+    if name == "request_phase_change":
+        target = arguments.get("target", "")
+        reason = arguments.get("reason", "")
+        return [{"type": "text", "text": f"Phase change request delivered to user: → {target} ({reason})"}]
 
     if name == "record_spec_field":
         category = arguments.get("category", "")

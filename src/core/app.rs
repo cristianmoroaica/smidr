@@ -42,6 +42,7 @@ pub enum CoreEvent {
     BuildArtifact { stl: PathBuf },
     BuildProgress { component: String, status: String },
     Question { question: String, options: Vec<String> },
+    PhaseSwitchRequest { target: String, reason: String },
     Error(String),
 }
 
@@ -86,6 +87,13 @@ pub struct AppCore {
     /// `session.phase_session`'s `pending_question`. Cleared by any user
     /// prompt, a phase switch, or a wholesale conversation reset.
     pub(crate) pending_question: Option<(String, Vec<String>)>,
+
+    /// A phase change the agent asked the user to make, awaiting the
+    /// user's explicit consent (or denial) in the web UI. Mirrored to disk
+    /// via `session.phase_session`'s `pending_phase_switch`. Cleared by any
+    /// user prompt, a phase switch, a denial, or a wholesale conversation
+    /// reset.
+    pub(crate) pending_phase_switch: Option<(String, String)>,
 }
 
 impl AppCore {
@@ -144,6 +152,7 @@ impl AppCore {
             pending_events: Vec::new(),
             phase_gate: false,
             pending_question: None,
+            pending_phase_switch: None,
         })
     }
 
@@ -172,22 +181,7 @@ impl AppCore {
     /// derivation) so "approve before ever prompting" (the web client's
     /// natural first action after connecting) has somewhere to persist to.
     pub fn approve_phase(&mut self) {
-        if self.session.phase_session.is_none() {
-            let dir = self.session.active_dir.clone().unwrap_or_else(|| {
-                let project_path = self
-                    .session
-                    .project_idx
-                    .and_then(|idx| self.projects.get(idx))
-                    .map(|p| p.path.clone())
-                    .unwrap_or_else(|| storage::project::root_dir().join("Untitled"));
-                let session_dir = project_path.join("session");
-                self.session.active_name = Some("session".to_string());
-                self.session.active_dir = Some(session_dir.clone());
-                session_dir
-            });
-            self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
-            self.refresh_projects();
-        }
+        self.ensure_session_dir();
 
         let phase = self.phase;
         if let Some(ref mut ps) = self.session.phase_session {
@@ -257,6 +251,108 @@ impl AppCore {
             ps.pending_question = None;
         }
         self.session.save(self.phase);
+    }
+
+    /// The current unresolved phase-switch request, if any, as
+    /// `(target, reason)`.
+    pub fn pending_phase_switch(&self) -> Option<&(String, String)> {
+        self.pending_phase_switch.as_ref()
+    }
+
+    /// Resolve any pending phase-switch request: clears in-memory state,
+    /// mirrors `None` into the phase session, and persists — but only when
+    /// there was something to clear, to avoid gratuitous disk writes.
+    pub(crate) fn clear_pending_phase_switch(&mut self) {
+        if self.pending_phase_switch.take().is_none() {
+            return;
+        }
+        if let Some(ref mut ps) = self.session.phase_session {
+            ps.pending_phase_switch = None;
+        }
+        self.session.save(self.phase);
+    }
+
+    /// The iteration number locked as the Refine-phase ghost-diff baseline,
+    /// if any (see "Lock as baseline & refine" in the Build-phase approve
+    /// modal).
+    pub fn baseline_iteration(&self) -> Option<u32> {
+        self.session
+            .phase_session
+            .as_ref()
+            .and_then(|ps| ps.baseline_iteration)
+    }
+
+    /// Lock `n` in as the Refine-phase ghost-diff baseline and persist it.
+    pub fn set_baseline_iteration(&mut self, n: u32) {
+        self.ensure_session_dir();
+        if let Some(ref mut ps) = self.session.phase_session {
+            ps.baseline_iteration = Some(n);
+        }
+        self.session.save(self.phase);
+    }
+
+    /// Ensure there is an active session directory, lazily creating one
+    /// (mirroring `approve_phase`'s pre-existing lazy-creation behaviour)
+    /// when the project has none yet. Returns the (now guaranteed) session
+    /// dir.
+    ///
+    /// Guarded against data loss: `self.session.create` installs a brand
+    /// new `PhaseSession` and the next `save()` overwrites whatever
+    /// `session.json` is already on disk at that path. `phase_session`
+    /// being `None` does NOT imply the directory is empty — `active_dir`
+    /// can already be `Some` (e.g. a REST handler resolving a project that
+    /// was only ever opened via `open_project_by_id`, never loaded into
+    /// memory). So when the target directory already has a `session.json`,
+    /// load it instead of blowing it away with a fresh one.
+    pub(crate) fn ensure_session_dir(&mut self) -> std::path::PathBuf {
+        if self.session.phase_session.is_none() {
+            let dir = self.session.active_dir.clone().unwrap_or_else(|| {
+                let project_path = self
+                    .session
+                    .project_idx
+                    .and_then(|idx| self.projects.get(idx))
+                    .map(|p| p.path.clone())
+                    .unwrap_or_else(|| storage::project::root_dir().join("Untitled"));
+                let session_dir = project_path.join("session");
+                self.session.active_name = Some("session".to_string());
+                self.session.active_dir = Some(session_dir.clone());
+                session_dir
+            });
+            if dir.join("session.json").is_file() {
+                if self
+                    .session
+                    .load(&dir, self.build_timeout, self.python_path.clone())
+                    .is_err()
+                {
+                    self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
+                } else {
+                    // Sync the core-level mirrors of what we just loaded.
+                    // Both callers (`approve_phase`, `set_baseline_iteration`)
+                    // immediately `save(self.phase)`, so leaving a stale
+                    // `self.phase` here would silently downgrade an on-disk
+                    // Build/Refine session back to Spec — and then mark the
+                    // wrong phase approved.
+                    if let Some(ref ps) = self.session.phase_session {
+                        self.phase = ps.phase;
+                        self.pending_question = ps
+                            .pending_question
+                            .as_ref()
+                            .map(|pq| (pq.question.clone(), pq.options.clone()));
+                        self.pending_phase_switch = ps
+                            .pending_phase_switch
+                            .as_ref()
+                            .map(|pps| (pps.target.clone(), pps.reason.clone()));
+                    }
+                }
+            } else {
+                self.session.create(dir, self.build_timeout, self.python_path.clone(), None);
+            }
+            self.refresh_projects();
+        }
+        self.session
+            .active_dir
+            .clone()
+            .expect("ensure_session_dir always sets active_dir")
     }
 
     // ---- accessors consumed by the web server ---------------------------
@@ -367,6 +463,7 @@ impl AppCore {
             self.phase = Phase::Spec;
             self.active_refs.clear();
             self.pending_question = None;
+            self.pending_phase_switch = None;
             self.push_message("system", "New session started.");
         }
 
@@ -468,6 +565,7 @@ impl AppCore {
         // Add user message to conversation; any user answer resolves a
         // pending question.
         self.clear_pending_question();
+        self.clear_pending_phase_switch();
         self.push_message("user", &clean_text);
         self.session.add_message(self.phase, "user", &clean_text);
         self.session.save(self.phase);
@@ -712,6 +810,10 @@ impl AppCore {
                         .and_then(|ps| ps.pending_question.as_ref())
                         .map(|pq| (pq.question.clone(), pq.options.clone()));
 
+                    self.pending_phase_switch = self.session.phase_session.as_ref()
+                        .and_then(|ps| ps.pending_phase_switch.as_ref())
+                        .map(|pps| (pps.target.clone(), pps.reason.clone()));
+
                     let entries: Vec<(String, String)> = self.session.conversations(phase)
                         .iter()
                         .map(|e| (e.role.clone(), e.content.clone()))
@@ -757,6 +859,7 @@ impl AppCore {
             self.session.phase_session = None;
             self.claude.session_id = None;
             self.pending_question = None;
+            self.pending_phase_switch = None;
 
             self.reset_conversation(Vec::new());
 
@@ -1069,7 +1172,7 @@ impl AppCore {
     }
 
     /// Dispatch an MCP tool call from Claude's stream to the appropriate handler.
-    fn handle_tool_call(&mut self, tool: &ToolCall) {
+    pub(crate) fn handle_tool_call(&mut self, tool: &ToolCall) {
         let name = tool.name.strip_prefix("mcp__smidr__").unwrap_or(&tool.name);
 
         match name {
@@ -1093,6 +1196,28 @@ impl AppCore {
                     self.session.save(self.phase);
 
                     self.push_event(CoreEvent::Question { question: q.to_string(), options });
+                }
+            }
+            "request_phase_change" => {
+                let target = tool.input.get("target").and_then(|v| v.as_str()).unwrap_or("");
+                let reason = tool.input.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                let target_lower = target.to_lowercase();
+                let reason_trimmed = reason.trim();
+                let valid_target = matches!(target_lower.as_str(), "spec" | "build" | "refine");
+                if valid_target && !reason_trimmed.is_empty() {
+                    self.pending_phase_switch = Some((target_lower.clone(), reason_trimmed.to_string()));
+                    if let Some(ref mut ps) = self.session.phase_session {
+                        ps.pending_phase_switch = Some(crate::storage::session::PendingPhaseSwitch {
+                            target: target_lower.clone(),
+                            reason: reason_trimmed.to_string(),
+                        });
+                    }
+                    self.session.save(self.phase);
+
+                    self.push_event(CoreEvent::PhaseSwitchRequest {
+                        target: target_lower,
+                        reason: reason_trimmed.to_string(),
+                    });
                 }
             }
             "record_spec_field" => {
@@ -1948,6 +2073,168 @@ mod tests {
             core.submit_prompt("20mm", &[], &[]);
 
             assert!(core.pending_question().is_none());
+        });
+    }
+
+    #[test]
+    fn request_phase_change_tool_call_sets_pending_phase_switch() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "Build",
+                    "reason": "that is a functional change",
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            assert_eq!(
+                core.pending_phase_switch(),
+                Some(&("build".to_string(), "that is a functional change".to_string()))
+            );
+
+            let mirrored = core
+                .session
+                .phase_session
+                .as_ref()
+                .and_then(|ps| ps.pending_phase_switch.as_ref())
+                .expect("pending_phase_switch should be mirrored onto phase_session");
+            assert_eq!(mirrored.target, "build");
+            assert_eq!(mirrored.reason, "that is a functional change");
+        });
+    }
+
+    #[test]
+    fn request_phase_change_tool_call_rejects_an_invalid_phase_switch_target() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "foo",
+                    "reason": "that is a functional change",
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            assert!(core.pending_phase_switch().is_none());
+            assert!(
+                core.session
+                    .phase_session
+                    .as_ref()
+                    .and_then(|ps| ps.pending_phase_switch.as_ref())
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn request_phase_change_tool_call_rejects_an_empty_or_whitespace_phase_switch_reason() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({ "target": "build", "reason": "" }),
+            };
+            core.handle_tool_call(&tool);
+            assert!(core.pending_phase_switch().is_none());
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({ "target": "build", "reason": "   " }),
+            };
+            core.handle_tool_call(&tool);
+            assert!(core.pending_phase_switch().is_none());
+        });
+    }
+
+    #[test]
+    fn request_phase_change_tool_call_normalizes_phase_switch_target_and_reason_on_the_wire() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "Build",
+                    "reason": "  that is a functional change  ",
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            let events: Vec<CoreEvent> = core.poll_events();
+            let found = events.iter().any(|e| matches!(
+                e,
+                CoreEvent::PhaseSwitchRequest { target, reason }
+                    if target == "build" && reason == "that is a functional change"
+            ));
+            assert!(found, "expected a case-normalized, trimmed PhaseSwitchRequest event, got: {events:?}");
+        });
+    }
+
+    #[test]
+    fn request_phase_change_tool_call_pending_phase_switch_persists_and_survives_reload() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "build",
+                    "reason": "that is a functional change",
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            let dir = core.session.active_dir.clone().expect("active session dir");
+            let reloaded = crate::model_session::PhaseSession::load(
+                &dir,
+                core.build_timeout,
+                core.python_path.clone(),
+            )
+            .expect("session should reload");
+            let reloaded_ps = reloaded
+                .pending_phase_switch
+                .expect("pending_phase_switch should survive save/load");
+            assert_eq!(reloaded_ps.target, "build");
+            assert_eq!(reloaded_ps.reason, "that is a functional change");
+
+            // load_session (the AppCore-level reload path) restores the
+            // in-memory (target, reason) mirror too.
+            core.session.phase_session = None;
+            core.pending_phase_switch = None;
+            let idx = core.session.project_idx.unwrap_or(0);
+            let name = core.session.active_name.clone().expect("active session name");
+            core.load_session(idx, name);
+            assert_eq!(
+                core.pending_phase_switch(),
+                Some(&("build".to_string(), "that is a functional change".to_string()))
+            );
+        });
+    }
+
+    #[test]
+    fn submit_prompt_resolves_a_pending_phase_switch() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "build",
+                    "reason": "that is a functional change",
+                }),
+            };
+            core.handle_tool_call(&tool);
+            assert!(core.pending_phase_switch().is_some());
+
+            core.submit_prompt("keep going in spec", &[], &[]);
+
+            assert!(core.pending_phase_switch().is_none());
         });
     }
 }

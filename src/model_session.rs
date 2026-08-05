@@ -3,7 +3,9 @@
 use crate::component::ComponentState;
 use crate::phase::Phase;
 use crate::spec::ModelSpec;
-use crate::storage::session::{ClaudeSessionMap, ConversationEntry, PendingQuestion, PhaseSessionData};
+use crate::storage::session::{
+    ClaudeSessionMap, ConversationEntry, PendingPhaseSwitch, PendingQuestion, PhaseSessionData,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,6 +39,15 @@ pub struct PhaseSession {
     /// `PhaseSessionData::pending_question`. `None` for a brand-new session
     /// and for old sessions loaded before this field existed.
     pub pending_question: Option<PendingQuestion>,
+    /// A phase change the agent asked the user to make, mirrored from
+    /// `PhaseSessionData::pending_phase_switch`. `None` for a brand-new
+    /// session and for old sessions loaded before this field existed.
+    pub pending_phase_switch: Option<PendingPhaseSwitch>,
+    /// The iteration locked as the Refine-phase ghost-diff baseline,
+    /// mirrored from `PhaseSessionData::baseline_iteration`. `None` for a
+    /// brand-new session and for old sessions loaded before this field
+    /// existed.
+    pub baseline_iteration: Option<u32>,
 }
 
 impl PhaseSession {
@@ -71,6 +82,8 @@ impl PhaseSession {
             briefing,
             approved: HashMap::new(),
             pending_question: None,
+            pending_phase_switch: None,
+            baseline_iteration: None,
         }
     }
 
@@ -155,6 +168,8 @@ impl PhaseSession {
             briefing: self.briefing.clone(),
             approved: self.approved.clone(),
             pending_question: self.pending_question.clone(),
+            pending_phase_switch: self.pending_phase_switch.clone(),
+            baseline_iteration: self.baseline_iteration,
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -210,6 +225,8 @@ impl PhaseSession {
             briefing: data.briefing,
             approved: data.approved,
             pending_question: data.pending_question,
+            pending_phase_switch: data.pending_phase_switch,
+            baseline_iteration: data.baseline_iteration,
         })
     }
 }
@@ -440,5 +457,92 @@ mod tests {
             "python".to_string(),
         ).unwrap();
         assert!(loaded.pending_question.is_none());
+    }
+
+    #[test]
+    fn test_pending_phase_switch_survives_save_and_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        assert!(session.pending_phase_switch.is_none());
+        session.pending_phase_switch = Some(PendingPhaseSwitch {
+            target: "build".to_string(),
+            reason: "that is a functional change".to_string(),
+        });
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        let pps = loaded
+            .pending_phase_switch
+            .expect("pending_phase_switch should survive save/load");
+        assert_eq!(pps.target, "build");
+        assert_eq!(pps.reason, "that is a functional change");
+    }
+
+    #[test]
+    fn test_pending_phase_switch_none_loads_as_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        assert!(loaded.pending_phase_switch.is_none());
+    }
+
+    #[test]
+    fn test_baseline_iteration_survives_save_and_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        assert!(session.baseline_iteration.is_none());
+        session.baseline_iteration = Some(3);
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        assert_eq!(loaded.baseline_iteration, Some(3));
+    }
+
+    #[test]
+    fn test_baseline_iteration_none_loads_as_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        assert!(loaded.baseline_iteration.is_none());
     }
 }

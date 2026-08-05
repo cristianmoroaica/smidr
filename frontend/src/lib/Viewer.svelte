@@ -9,6 +9,10 @@
     viewing,
     selectedParts,
     failedComponents,
+    buildProgress = [],
+    busy = false,
+    partsOpen,
+    onPartsOpenChange,
     onPartSelected,
     onPartDeselected,
     onStartBuild = null
@@ -18,10 +22,16 @@
     viewing: number | null;
     selectedParts: string[];
     failedComponents: string[];
+    buildProgress?: { component: string; status: string }[];
+    busy?: boolean;
+    partsOpen: boolean;
+    onPartsOpenChange: (v: boolean) => void;
     onPartSelected: (name: string) => void;
     onPartDeselected: (name: string) => void;
     onStartBuild?: (() => void) | null;
   } = $props();
+
+  let buildActive = $derived(busy && buildProgress.length > 0);
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let containerEl: HTMLDivElement | undefined = $state();
@@ -50,6 +60,10 @@
   let dimensionsData = $state<Record<string, number> | null>(null);
   let dimensionsError = $state(false);
   let dimensionsLoading = $state(false);
+  let partNames = $state<string[]>([]);
+  let isolatedPart = $state<string | null>(null);
+  let folderTitle = $state('Open session folder');
+  let folderNote = $state<string | null>(null);
 
   // Keyed by `${projectId}:${iteration}` so a project switch can't serve a
   // stale project's cached dimensions.
@@ -576,6 +590,35 @@
     }
   }
 
+  function applyIsolation() {
+    if (!modelGroup) return;
+    modelGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        const found = findMeshRoot(obj);
+        obj.visible = isolatedPart === null || (found !== null && found.name === isolatedPart);
+      }
+    });
+  }
+
+  function setIsolatedPart(name: string | null) {
+    isolatedPart = name;
+    applyIsolation();
+  }
+
+  async function doOpenFolder() {
+    folderNote = null;
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/open-folder`, {
+        method: 'POST'
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { path: string };
+      folderTitle = data.path;
+    } catch {
+      folderNote = 'could not open folder';
+    }
+  }
+
   async function loadIteration(project: string, n: number) {
     if (!scene) return;
     const gen = ++loadGeneration;
@@ -599,6 +642,19 @@
       loadError = null;
       lastLoadedIteration = n;
       lastLoadedProject = projectId;
+
+      {
+        const names = new Set<string>();
+        modelGroup.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            const found = findMeshRoot(obj);
+            if (found) names.add(found.name);
+          }
+        });
+        partNames = Array.from(names).sort();
+        isolatedPart = null;
+      }
+
       frameCameraToModel();
       syncAllTints();
     } catch (err) {
@@ -693,6 +749,8 @@
       dimensionsError = false;
       dimensionsLoading = false;
       measureLabelKey = null;
+      partNames = [];
+      isolatedPart = null;
     };
   });
 
@@ -805,11 +863,59 @@
       >
         Dimensions
       </button>
+      <button
+        type="button"
+        class:pressed={partsOpen}
+        aria-pressed={partsOpen}
+        onclick={() => onPartsOpenChange(!partsOpen)}
+      >
+        Parts
+      </button>
     </div>
+    <button
+      type="button"
+      class="icon-btn"
+      title={folderTitle}
+      aria-label="Open session folder"
+      onclick={doOpenFolder}
+    >
+      📁
+    </button>
     {#if ghostEnabled && ghostNote}
       <span class="toolbar-note">{ghostNote}</span>
     {/if}
+    {#if folderNote}
+      <span class="toolbar-note">{folderNote}</span>
+    {/if}
   </div>
+
+  {#if partsOpen}
+    <div class="parts-panel" class:below-banner={!!loadError}>
+      <div class="parts-title">Parts</div>
+      {#if partNames.length === 0}
+        <div class="dimensions-empty">no parts</div>
+      {:else}
+        <button
+          type="button"
+          class="parts-row"
+          class:active={isolatedPart === null}
+          onclick={() => setIsolatedPart(null)}
+        >
+          Show all
+        </button>
+        {#each partNames as name (name)}
+          <button
+            type="button"
+            class="parts-row"
+            class:active={isolatedPart === name}
+            onclick={() => setIsolatedPart(name)}
+          >
+            {name}
+          </button>
+        {/each}
+      {/if}
+    </div>
+  {/if}
 
   {#if dimensionsEnabled}
     <div class="dimensions-card" class:below-banner={!!loadError}>
@@ -834,10 +940,29 @@
 
   {#if iterations.length === 0}
     <div class="placeholder">
-      <span>No model yet</span>
-      {#if onStartBuild}
-        <button class="start-build" onclick={onStartBuild}>⚒ Forge the model</button>
-        <span class="start-build-hint">Runs a build from the approved spec</span>
+      {#if buildActive}
+        <div class="build-progress-panel" role="status" aria-live="polite">
+          <div class="build-progress-header">
+            <span class="spinner"></span>
+            <span>Forging…</span>
+          </div>
+          <ul class="build-progress-list">
+            {#each buildProgress as p (p.component)}
+              <li class="build-progress-row status-{p.status}">
+                <span class="build-progress-icon">
+                  {#if p.status === 'done'}✓{:else if p.status === 'failed'}✗{:else}⏳{/if}
+                </span>
+                <span class="build-progress-name">{p.component}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {:else}
+        <span>No model yet</span>
+        {#if onStartBuild}
+          <button class="start-build" onclick={onStartBuild}>⚒ Forge the model</button>
+          <span class="start-build-hint">Runs a build from the approved spec</span>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -908,6 +1033,82 @@
   .start-build-hint {
     font-size: 0.8rem;
     color: var(--text-muted, #6b7280);
+  }
+
+  .build-progress-panel {
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-width: 14rem;
+    max-width: 22rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-2);
+    padding: 0.9rem 1.1rem;
+  }
+
+  .build-progress-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .spinner {
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    animation: spin 900ms linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .build-progress-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .build-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.82rem;
+  }
+
+  .build-progress-icon {
+    width: 1.1rem;
+    text-align: center;
+    flex: 0 0 auto;
+  }
+
+  .build-progress-row.status-building .build-progress-icon {
+    color: var(--text-secondary);
+  }
+
+  .build-progress-row.status-done .build-progress-icon {
+    color: var(--success);
+  }
+
+  .build-progress-row.status-failed .build-progress-icon {
+    color: var(--danger);
+  }
+
+  .build-progress-name {
+    color: var(--text);
   }
 
   .load-error {
@@ -984,6 +1185,97 @@
   .segmented button:focus-visible {
     outline: 2px solid rgba(79, 143, 247, 0.5);
     outline-offset: -2px;
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    font-size: 0.95rem;
+    background: rgba(26, 29, 36, 0.9);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-sm, 6px);
+    color: var(--text-secondary, #9aa3b2);
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
+    transition: background 120ms, color 120ms;
+  }
+
+  .icon-btn:hover {
+    background: var(--bg-hover, #2a2f3a);
+    color: var(--text, #e6e9ef);
+  }
+
+  .icon-btn:focus-visible {
+    outline: 2px solid rgba(79, 143, 247, 0.5);
+    outline-offset: -2px;
+  }
+
+  .parts-panel {
+    position: absolute;
+    top: 3rem;
+    left: 0.6rem;
+    min-width: 12rem;
+    max-width: 16rem;
+    max-height: 55%;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    background: rgba(26, 29, 36, 0.92);
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.45));
+    color: var(--text, #e6e9ef);
+    padding: 0.6rem 0.5rem;
+    backdrop-filter: blur(6px);
+    pointer-events: auto;
+    z-index: 5;
+  }
+
+  .parts-panel.below-banner {
+    top: 5.5rem;
+  }
+
+  .parts-title {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary, #9aa3b2);
+    font-weight: 600;
+    padding: 0.1rem 0.4rem 0.4rem;
+  }
+
+  .parts-row {
+    text-align: left;
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.35rem 0.5rem;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--text-secondary, #9aa3b2);
+    cursor: pointer;
+    transition: background 120ms, color 120ms;
+  }
+
+  .parts-row:hover {
+    background: var(--bg-hover, #2a2f3a);
+    color: var(--text, #e6e9ef);
+  }
+
+  .parts-row.active {
+    background: var(--accent-soft);
+    color: var(--text, #e6e9ef);
+    font-weight: 600;
+  }
+
+  .parts-row:focus-visible {
+    box-shadow: var(--focus-ring);
+    outline: none;
   }
 
   .toolbar-note {

@@ -168,23 +168,52 @@ impl AppCore {
     }
 
 
-    pub(crate) fn handle_export(&mut self) {
-        if let Some(ref session_dir) = self.session.active_dir {
-            if let Some(stl_path) = self.session.latest_stl_path() {
-                let export_stl = session_dir.join("export.stl");
-                match std::fs::copy(&stl_path, &export_stl) {
-                    Ok(_) => {
-                        self.push_message("system", &format!("Exported to {}", export_stl.display()));
-                    }
-                    Err(e) => {
-                        self.push_message("system", &format!("Export failed: {e}"));
-                    }
-                }
-            } else {
-                self.push_message("system", "No model to export.");
+    /// Copy the latest iteration's geometry into the session dir as
+    /// `export.stl` (and, when a `_buffer.step` is present, `export.step`).
+    /// Returns the session dir and the list of file names actually written.
+    /// `Err` when there is no active session dir or no STL to export.
+    pub(crate) fn export_artifacts(&mut self) -> Result<(PathBuf, Vec<String>), String> {
+        let session_dir = self
+            .session
+            .active_dir
+            .clone()
+            .ok_or_else(|| "No active session directory for export.".to_string())?;
+        let stl_path = self
+            .session
+            .latest_stl_path()
+            .ok_or_else(|| "No model to export.".to_string())?;
+
+        let export_stl = session_dir.join("export.stl");
+        std::fs::copy(&stl_path, &export_stl).map_err(|e| format!("Export failed: {e}"))?;
+        let mut written = vec!["export.stl".to_string()];
+
+        let buffer_step = session_dir.join("_buffer.step");
+        if buffer_step.exists() {
+            let export_step = session_dir.join("export.step");
+            match std::fs::copy(&buffer_step, &export_step) {
+                Ok(_) => written.push("export.step".to_string()),
+                // A STEP that exists but cannot be copied is omitted from
+                // `written` (callers only ever advertise files actually on
+                // disk) — log it so the omission is diagnosable rather than
+                // silent.
+                Err(e) => eprintln!("export: failed to copy {}: {e}", buffer_step.display()),
             }
-        } else {
-            self.push_message("system", "No active session directory for export.");
+        }
+
+        Ok((session_dir, written))
+    }
+
+    pub(crate) fn handle_export(&mut self) {
+        match self.export_artifacts() {
+            Ok((session_dir, _written)) => {
+                self.push_message(
+                    "system",
+                    &format!("Exported to {}", session_dir.join("export.stl").display()),
+                );
+            }
+            Err(e) => {
+                self.push_message("system", &e);
+            }
         }
     }
 
@@ -219,6 +248,7 @@ impl AppCore {
         }
         self.phase = target;
         self.clear_pending_question();
+        self.clear_pending_phase_switch();
         // Force fresh Claude session so phase-specific system prompt and context
         // (spec conversation, goal.md, references) are re-injected. Without this,
         // --resume would continue the previous phase's session and silently drop
@@ -315,6 +345,70 @@ mod tests {
             assert_eq!(
                 core.pending_question(),
                 Some(&("How tall?".to_string(), vec!["10mm".to_string()]))
+            );
+        });
+    }
+
+    #[test]
+    fn successful_phase_switch_request_clears_a_pending_phase_switch() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.pending_phase_switch =
+                Some(("build".to_string(), "that is a functional change".to_string()));
+
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+
+            assert!(core.pending_phase_switch().is_none());
+        });
+    }
+
+    #[test]
+    fn successful_phase_switch_request_clears_pending_phase_switch_on_disk() {
+        with_test_home(|| {
+            let mut core = test_core(Some("A widget briefing".to_string()));
+            // Go through the actual tool-call handler so the mirror-into-
+            // phase_session + session.save path is exercised, not just the
+            // clear path.
+            let tool = crate::claude_bridge::ToolCall {
+                name: "mcp__smidr__request_phase_change".to_string(),
+                input: serde_json::json!({
+                    "target": "build",
+                    "reason": "that is a functional change",
+                }),
+            };
+            core.handle_tool_call(&tool);
+            assert!(core.pending_phase_switch().is_some());
+
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+
+            // In-memory mirror cleared...
+            assert!(core.pending_phase_switch().is_none());
+            // ...and the disk copy too: reload the session and check.
+            let dir = core.session.active_dir.clone().expect("active session dir");
+            let reloaded = crate::model_session::PhaseSession::load(
+                &dir,
+                core.build_timeout,
+                core.python_path.clone(),
+            )
+            .expect("session should reload");
+            assert!(reloaded.pending_phase_switch.is_none());
+        });
+    }
+
+    #[test]
+    fn denied_phase_switch_request_preserves_a_pending_phase_switch() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.pending_phase_switch =
+                Some(("build".to_string(), "that is a functional change".to_string()));
+            core.set_phase_gate(true); // current phase (Spec) is not approved
+
+            let result = core.try_switch_phase(Phase::Build);
+
+            assert_eq!(result, Err(SwitchDenied::NotApproved));
+            assert_eq!(
+                core.pending_phase_switch(),
+                Some(&("build".to_string(), "that is a functional change".to_string()))
             );
         });
     }

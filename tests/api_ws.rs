@@ -56,6 +56,32 @@ case "$prompt" in
 esac
 "#;
 
+/// A fake `claude` script that emits a tool_use for
+/// `mcp__smidr__request_phase_change`, then the usual result event. Branches
+/// on the *prompt text* passed via `-p`, same as
+/// `FAKE_CLAUDE_ASK_QUESTION_SCRIPT`: the test's "make it prettier" prompt
+/// gets the phase-change request; any other prompt gets a plain text reply.
+const FAKE_CLAUDE_PHASE_SWITCH_SCRIPT: &str = r#"#!/bin/sh
+prompt=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-p" ]; then
+    prompt="$arg"
+  fi
+  prev="$arg"
+done
+case "$prompt" in
+  *"make it prettier"*)
+    echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__smidr__request_phase_change","input":{"target":"build","reason":"that is a functional change"}}]}}'
+    echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"requested"}'
+    ;;
+  *)
+    echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"text","text":"ok"}]}}'
+    echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"ok"}'
+    ;;
+esac
+"#;
+
 /// Write the given fake `claude` script into a fresh temp dir and return the
 /// `PATH` value (fake dir prepended to the inherited `PATH`) that puts it
 /// ahead of any real `claude` on the search path. Shared by every test that
@@ -541,4 +567,143 @@ fn snapshot_pending_question_is_null_by_default() {
 
     assert_eq!(snapshot["type"], "snapshot");
     assert_eq!(snapshot["pending_question"], Value::Null);
+}
+
+/// A `mcp__smidr__request_phase_change` tool call must become a pinned
+/// `{"type":"phase_switch_request","target":..,"reason":..}` WS message —
+/// arriving before the finalizing snapshot.
+#[test]
+fn request_phase_change_tool_call_emits_phase_switch_request_message() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_PHASE_SWITCH_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "make it prettier",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+    loop {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see a phase_switch_request message within {MAX_FRAMES} frames");
+
+        let msg = read_json(&mut ws);
+        match msg["type"].as_str() {
+            Some("phase_switch_request") => {
+                assert_eq!(msg["target"], "build");
+                assert_eq!(msg["reason"], "that is a functional change");
+                break;
+            }
+            Some("snapshot") => {
+                panic!("finalizing snapshot arrived before the phase_switch_request message: {msg}");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `snapshot.pending_phase_switch` must carry the outstanding request (and
+/// survive a fresh connection / reload) until the user denies it, at which
+/// point it goes back to `null` and the phase is unchanged.
+#[test]
+fn snapshot_carries_pending_phase_switch_until_denied() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_PHASE_SWITCH_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "make it prettier",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+    let mut saw_request = false;
+    let final_snapshot = loop {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see the finalizing snapshot within {MAX_FRAMES} frames");
+
+        let msg = read_json(&mut ws);
+        match msg["type"].as_str() {
+            Some("phase_switch_request") => saw_request = true,
+            Some("snapshot") => {
+                assert!(saw_request, "snapshot arrived before the phase_switch_request message");
+                break msg;
+            }
+            _ => {}
+        }
+    };
+
+    assert_eq!(final_snapshot["pending_phase_switch"]["target"], "build");
+    assert_eq!(final_snapshot["pending_phase_switch"]["reason"], "that is a functional change");
+
+    // A second connection to the same project must see the same
+    // pending_phase_switch — reload keeps the modal alive (persistence).
+    let mut ws2 = connect(&server, &id);
+    let snapshot2 = read_json(&mut ws2);
+    assert_eq!(snapshot2["pending_phase_switch"]["target"], "build");
+    assert_eq!(snapshot2["pending_phase_switch"]["reason"], "that is a functional change");
+
+    // Close the second connection before denying, same rationale as
+    // `snapshot_carries_pending_question_until_answered`: both connections
+    // share one `AppCore`, and `poll_core_events` drains events on whichever
+    // connection's poll loop runs first.
+    drop(ws2);
+    std::thread::sleep(Duration::from_millis(200));
+
+    send_json(&mut ws, json!({"type": "deny_phase_switch"}));
+    let reply = read_json(&mut ws);
+    assert_eq!(reply["type"], "snapshot");
+    assert_eq!(reply["pending_phase_switch"], Value::Null);
+    assert_eq!(reply["phase"], "Spec");
+}
+
+/// The phase must remain unchanged after a `deny_phase_switch` — denying a
+/// phase-switch request must never itself trigger a phase change.
+#[test]
+fn deny_phase_switch_does_not_change_phase() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_PHASE_SWITCH_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "make it prettier",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+    loop {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see the finalizing snapshot within {MAX_FRAMES} frames");
+        let msg = read_json(&mut ws);
+        if msg["type"] == "snapshot" {
+            break;
+        }
+    }
+
+    send_json(&mut ws, json!({"type": "deny_phase_switch"}));
+    let reply = read_json(&mut ws);
+    assert_eq!(reply["type"], "snapshot");
+    assert_eq!(reply["phase"], "Spec");
+    assert_eq!(reply["pending_phase_switch"], Value::Null);
+
+    // A fresh connection must also report Spec, unchanged.
+    let mut ws2 = connect(&server, &id);
+    let snapshot2 = read_json(&mut ws2);
+    assert_eq!(snapshot2["phase"], "Spec");
 }

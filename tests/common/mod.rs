@@ -85,6 +85,11 @@ fn spawn_inner_in_home(
     cmd.args(["--port", "0", "--no-browser"])
         .args(extra_args)
         .env("HOME", home.path())
+        // Harness-wide safety property: never let a test spawn `xdg-open`
+        // on the developer's desktop (see `open_folder` in
+        // `src/server/routes.rs`). Set before `extra` is applied, so a test
+        // that genuinely wants the spawn can override it.
+        .env("SMIDR_NO_OPEN", "1")
         .stdin(if stdin_text.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

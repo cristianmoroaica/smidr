@@ -38,6 +38,17 @@ pub struct PhaseSessionData {
     /// deserialize to `None`.
     #[serde(default)]
     pub pending_question: Option<PendingQuestion>,
+    /// A phase change the agent asked the user to make, awaiting the user's
+    /// explicit consent (or denial) in the web UI. Old session.json files
+    /// predate this field and deserialize to `None`.
+    #[serde(default)]
+    pub pending_phase_switch: Option<PendingPhaseSwitch>,
+    /// The iteration number locked as the Refine-phase ghost-diff baseline
+    /// when the user chose "Lock as baseline & refine" in the Build-phase
+    /// approve modal. Old session.json files predate this field and
+    /// deserialize to `None`.
+    #[serde(default)]
+    pub baseline_iteration: Option<u32>,
 }
 
 /// A single conversation message
@@ -54,6 +65,14 @@ pub struct PendingQuestion {
     pub question: String,
     #[serde(default)]
     pub options: Vec<String>,
+}
+
+/// A phase change the agent asked the user to make, awaiting the user's
+/// explicit consent (or denial) in the web UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingPhaseSwitch {
+    pub target: String,
+    pub reason: String,
 }
 
 /// Create a new session directory inside a project.
@@ -125,6 +144,8 @@ mod tests {
             briefing: Some("briefing.md".into()),
             approved: HashMap::new(),
             pending_question: None,
+            pending_phase_switch: None,
+            baseline_iteration: None,
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         assert!(json.contains("\"phase\""));
@@ -198,10 +219,91 @@ mod tests {
                 question: "How wide?".into(),
                 options: vec!["20mm".into(), "40mm".into()],
             }),
+            pending_phase_switch: None,
+            baseline_iteration: None,
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         let round_tripped: PhaseSessionData = serde_json::from_str(&json).unwrap();
         assert_eq!(round_tripped.pending_question, data.pending_question);
+    }
+
+    #[test]
+    fn test_deserialize_session_without_pending_phase_switch_field() {
+        // Old session.json files predate the `pending_phase_switch` field
+        // entirely — must still deserialize, yielding `None`.
+        let json = r#"{
+            "name": "test",
+            "created": "2026-03-16T12:00:00Z",
+            "phase": "Spec",
+            "current_component": null,
+            "claude_sessions": {},
+            "conversations": {},
+            "component_states": []
+        }"#;
+        let data: PhaseSessionData = serde_json::from_str(json).unwrap();
+        assert!(data.pending_phase_switch.is_none());
+    }
+
+    #[test]
+    fn test_pending_phase_switch_round_trips_through_serialization() {
+        let data = PhaseSessionData {
+            name: "test_session".into(),
+            created: "2026-03-16T12:00:00Z".into(),
+            phase: Phase::Spec,
+            current_component: None,
+            claude_sessions: ClaudeSessionMap::default(),
+            conversations: std::collections::HashMap::new(),
+            component_states: vec![],
+            briefing: None,
+            approved: HashMap::new(),
+            pending_question: None,
+            pending_phase_switch: Some(PendingPhaseSwitch {
+                target: "build".into(),
+                reason: "that is a functional change".into(),
+            }),
+            baseline_iteration: None,
+        };
+        let json = serde_json::to_string_pretty(&data).unwrap();
+        let round_tripped: PhaseSessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.pending_phase_switch, data.pending_phase_switch);
+    }
+
+    #[test]
+    fn test_deserialize_session_without_baseline_iteration_field() {
+        // Old session.json files predate the `baseline_iteration` field
+        // entirely — must still deserialize, yielding `None`.
+        let json = r#"{
+            "name": "test",
+            "created": "2026-03-16T12:00:00Z",
+            "phase": "Spec",
+            "current_component": null,
+            "claude_sessions": {},
+            "conversations": {},
+            "component_states": []
+        }"#;
+        let data: PhaseSessionData = serde_json::from_str(json).unwrap();
+        assert!(data.baseline_iteration.is_none());
+    }
+
+    #[test]
+    fn test_baseline_iteration_round_trips_through_serialization() {
+        let data = PhaseSessionData {
+            name: "test_session".into(),
+            created: "2026-03-16T12:00:00Z".into(),
+            phase: Phase::Spec,
+            current_component: None,
+            claude_sessions: ClaudeSessionMap::default(),
+            conversations: std::collections::HashMap::new(),
+            component_states: vec![],
+            briefing: None,
+            approved: HashMap::new(),
+            pending_question: None,
+            pending_phase_switch: None,
+            baseline_iteration: Some(3),
+        };
+        let json = serde_json::to_string_pretty(&data).unwrap();
+        let round_tripped: PhaseSessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.baseline_iteration, Some(3));
     }
 
     #[test]

@@ -9,6 +9,7 @@ import glob
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -108,4 +109,59 @@ def load_components(paths: dict) -> dict:
             result[name] = mesh
         except Exception:
             continue
+    return result
+
+
+def load_placements(session_dir) -> dict:
+    """Read <session_dir>/assembly/placements.json into name(lowercased) -> 4x4 np.ndarray.
+
+    Returns {} when the file is missing, unreadable, or malformed.
+    """
+    path = os.path.join(str(session_dir), "assembly", "placements.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        result = {}
+        for entry in data["placements"]:
+            name = str(entry["name"]).lower()
+            matrix = np.array(entry["matrix"], dtype=float).reshape(4, 4)
+            result[name] = matrix
+        return result
+    except Exception:
+        return {}
+
+
+def apply_placements(components: dict, placements: dict) -> dict:
+    """Return a new dict of components with matching placements applied.
+
+    Component names (dict keys / GLB node names) are preserved verbatim.
+    Matching against placement names is case-insensitive. Components with no
+    matching placement keep an identity transform (unchanged, but still
+    copied). Placement entries with no matching component are ignored.
+    """
+    if not placements:
+        return components
+
+    matched_placement_names = set()
+    result = {}
+    for name, mesh in components.items():
+        mesh_copy = mesh.copy()
+        matrix = placements.get(name.lower())
+        if matrix is not None:
+            mesh_copy.apply_transform(matrix)
+            matched_placement_names.add(name.lower())
+        else:
+            print(
+                f"placements.json: no placement for component {name!r}; using identity",
+                file=sys.stderr,
+            )
+        result[name] = mesh_copy
+
+    for placement_name in placements:
+        if placement_name not in matched_placement_names:
+            print(
+                f"placements.json: no component for placement {placement_name!r}",
+                file=sys.stderr,
+            )
+
     return result

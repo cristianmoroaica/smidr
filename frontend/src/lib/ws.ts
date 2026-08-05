@@ -7,7 +7,8 @@ export type ClientMsg =
   | { type: 'approve_phase' }
   | { type: 'advance' }
   | { type: 'go_back'; target: 'spec' | 'build' }
-  | { type: 'cancel_stream' };
+  | { type: 'cancel_stream' }
+  | { type: 'deny_phase_switch' };
 
 export type ServerMsg =
   | {
@@ -18,6 +19,7 @@ export type ServerMsg =
       iterations: number[];
       spec: string | null;
       pending_question: { question: string; options: string[] } | null;
+      pending_phase_switch: { target: string; reason: string } | null;
     }
   | { type: 'stream_delta'; text: string }
   | { type: 'tool_call'; name: string; detail: string }
@@ -25,6 +27,7 @@ export type ServerMsg =
   | { type: 'iteration_added'; n: number }
   | { type: 'build_progress'; component: string; status: 'building' | 'done' | 'failed' }
   | { type: 'question'; question: string; options: string[] }
+  | { type: 'phase_switch_request'; target: string; reason: string }
   | { type: 'error'; message: string };
 
 export interface SessionHandlers {

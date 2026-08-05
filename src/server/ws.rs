@@ -3,13 +3,19 @@
 //! Wire protocol is pinned by the plan: the exact JSON shapes below (field
 //! names, message `type` values) must not change without updating the spec.
 //!
-//! client→server: `prompt` / `approve_phase` / `advance` / `go_back` / `cancel_stream`
+//! client→server: `prompt` / `approve_phase` / `advance` / `go_back` /
+//!                 `cancel_stream` / `deny_phase_switch`
 //! server→client: `snapshot` / `stream_delta` / `tool_call` / `question` /
-//!                 `phase_state` / `iteration_added` / `build_progress` / `error`
+//!                 `phase_state` / `iteration_added` / `build_progress` /
+//!                 `phase_switch_request` / `error`
 //!
-//! `snapshot` additionally carries a `pending_question` field (see
-//! `pending_question_value`) so a reconnecting/reloading client keeps the
-//! interactive question card until it's answered.
+//! `snapshot` additionally carries `pending_question` (see
+//! `pending_question_value`) and `pending_phase_switch` (see
+//! `pending_phase_switch_value`) fields so a reconnecting/reloading client
+//! keeps the interactive question card / phase-switch-request modal alive
+//! until it's answered/denied, plus a `baseline_iteration` field (number or
+//! `null`) carrying the iteration locked as the Refine-phase ghost-diff
+//! baseline via `POST /api/projects/{id}/baseline`, if any.
 
 use std::time::Duration;
 
@@ -199,6 +205,10 @@ fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> V
             core.cancel();
             Vec::new()
         }
+        Some("deny_phase_switch") => {
+            core.clear_pending_phase_switch();
+            vec![snapshot_value(core)]
+        }
         _ => vec![error_msg("unknown message type")],
     }
 }
@@ -257,6 +267,9 @@ fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {
             CoreEvent::Question { question, options } => {
                 out.push(json!({"type": "question", "question": question, "options": options}));
             }
+            CoreEvent::PhaseSwitchRequest { target, reason } => {
+                out.push(json!({"type": "phase_switch_request", "target": target, "reason": reason}));
+            }
             CoreEvent::Error(message) => {
                 out.push(json!({"type": "error", "message": message}));
             }
@@ -286,6 +299,7 @@ fn snapshot_value(core: &AppCore) -> Value {
     let iterations: Vec<u32> = crate::server::artifacts::glb_iterations(core.session_dir());
     let spec = spec_value(core);
     let pending_question = pending_question_value(core);
+    let pending_phase_switch = pending_phase_switch_value(core);
     json!({
         "type": "snapshot",
         "phase": core.phase().label(),
@@ -294,6 +308,8 @@ fn snapshot_value(core: &AppCore) -> Value {
         "iterations": iterations,
         "spec": spec,
         "pending_question": pending_question,
+        "pending_phase_switch": pending_phase_switch,
+        "baseline_iteration": core.baseline_iteration(),
     })
 }
 
@@ -303,6 +319,17 @@ fn snapshot_value(core: &AppCore) -> Value {
 fn pending_question_value(core: &AppCore) -> Value {
     match core.pending_question() {
         Some((question, options)) => json!({"question": question, "options": options}),
+        None => Value::Null,
+    }
+}
+
+/// `pending_phase_switch` for the snapshot: `{"target":<str>,"reason":<str>}`
+/// when the agent has requested a phase change awaiting the user's consent
+/// or denial, else JSON `null`. Pinned shape — keeps a reloading/
+/// reconnecting client's phase-switch-request modal alive.
+fn pending_phase_switch_value(core: &AppCore) -> Value {
+    match core.pending_phase_switch() {
+        Some((target, reason)) => json!({"target": target, "reason": reason}),
         None => Value::Null,
     }
 }

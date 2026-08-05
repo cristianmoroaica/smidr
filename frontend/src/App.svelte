@@ -4,6 +4,8 @@
   import Viewer from './lib/Viewer.svelte';
   import Timeline from './lib/Timeline.svelte';
   import SpecPanel from './lib/SpecPanel.svelte';
+  import ApproveModal from './lib/ApproveModal.svelte';
+  import PhaseSwitchModal from './lib/PhaseSwitchModal.svelte';
   import { connectSession, type ServerMsg, type SessionClient } from './lib/ws';
 
   type Message = { role: string; content: string };
@@ -28,8 +30,12 @@
   let viewing = $state<number | null>(null);
   let failedComponents = $state<string[]>([]);
   let pendingQuestion = $state<{ question: string; options: string[] } | null>(null);
+  let buildProgress = $state<{ component: string; status: string }[]>([]);
+  let approveModalOpen = $state(false);
+  let partsPanelOpen = $state(false);
+  let pendingPhaseSwitch = $state<{ target: string; reason: string } | null>(null);
 
-  let client: SessionClient | null = null;
+  let client: SessionClient | null = $state(null);
 
   function handleMessage(m: ServerMsg) {
     switch (m.type) {
@@ -44,6 +50,8 @@
         busy = false;
         failedComponents = [];
         pendingQuestion = m.pending_question;
+        pendingPhaseSwitch = m.pending_phase_switch;
+        buildProgress = [];
         break;
       case 'stream_delta':
         busy = true;
@@ -63,6 +71,7 @@
         if (!iterations.includes(m.n)) {
           iterations = [...iterations, m.n].sort((a, b) => a - b);
           viewing = null;
+          buildProgress = [];
         }
         failedComponents = [];
         break;
@@ -72,7 +81,16 @@
           ...toolCalls,
           { name: `build: ${m.component}`, detail: m.status }
         ];
-        if (m.status !== 'building') busy = false;
+        {
+          const idx = buildProgress.findIndex((p) => p.component === m.component);
+          if (idx === -1) {
+            buildProgress = [...buildProgress, { component: m.component, status: m.status }];
+          } else {
+            buildProgress = buildProgress.map((p, i) =>
+              i === idx ? { ...p, status: m.status } : p
+            );
+          }
+        }
         if (m.status === 'failed') {
           if (!failedComponents.includes(m.component)) {
             failedComponents = [...failedComponents, m.component];
@@ -83,6 +101,9 @@
         break;
       case 'question':
         pendingQuestion = { question: m.question, options: m.options };
+        break;
+      case 'phase_switch_request':
+        pendingPhaseSwitch = { target: m.target, reason: m.reason };
         break;
       case 'error':
         lastError = m.message;
@@ -158,6 +179,7 @@
     if (!client) return;
     busy = true;
     pendingQuestion = null;
+    pendingPhaseSwitch = null;
     conversation = [...conversation, { role: 'user', content: text }];
     client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [...libRefs] });
     selectedParts = [];
@@ -193,7 +215,20 @@
   }
 
   function onApprove() {
+    if (phase.toLowerCase() === 'build') {
+      approveModalOpen = true;
+      return;
+    }
     client?.send({ type: 'approve_phase' });
+  }
+
+  function closeApproveModal() {
+    approveModalOpen = false;
+  }
+
+  function onInspectFromModal() {
+    approveModalOpen = false;
+    partsPanelOpen = true;
   }
 
   function onAdvance() {
@@ -272,6 +307,10 @@
           {viewing}
           {selectedParts}
           {failedComponents}
+          {buildProgress}
+          {busy}
+          partsOpen={partsPanelOpen}
+          onPartsOpenChange={(v) => (partsPanelOpen = v)}
           onPartSelected={onPartSelected}
           onPartDeselected={onRemovePart}
           onStartBuild={phase.toLowerCase() === 'build' && !busy
@@ -298,6 +337,24 @@
         <SpecPanel {spec} {phase} {approved} {onApprove} />
       </div>
     </div>
+    {#if approveModalOpen && client}
+      <ApproveModal
+        {projectId}
+        currentIteration={viewing ?? (iterations.length > 0 ? iterations[iterations.length - 1] : null)}
+        {client}
+        onClose={closeApproveModal}
+        onInspect={onInspectFromModal}
+      />
+    {/if}
+    {#if pendingPhaseSwitch && client}
+      <PhaseSwitchModal
+        {phase}
+        target={pendingPhaseSwitch.target}
+        reason={pendingPhaseSwitch.reason}
+        {client}
+        onDismiss={() => (pendingPhaseSwitch = null)}
+      />
+    {/if}
   {/if}
 </main>
 

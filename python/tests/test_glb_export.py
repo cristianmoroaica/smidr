@@ -139,3 +139,127 @@ def test_load_components_skips_missing_and_bad_paths(tmp_path):
     assert "base" in loaded
     assert "missing" not in loaded
     assert isinstance(loaded["base"], trimesh.Trimesh)
+
+
+# ── load_placements / apply_placements ──
+
+def test_load_placements_missing_file_returns_empty(tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    assert glb_export.load_placements(session_dir) == {}
+
+
+def test_load_placements_valid_file_returns_lowercased_keys(tmp_path):
+    session_dir = tmp_path / "session"
+    assembly_dir = session_dir / "assembly"
+    assembly_dir.mkdir(parents=True)
+    matrix = [1.0, 0.0, 0.0, 0.0,
+              0.0, 1.0, 0.0, 0.0,
+              0.0, 0.0, 1.0, 25.0,
+              0.0, 0.0, 0.0, 1.0]
+    payload = {"placements": [{"name": "Lid", "matrix": matrix}]}
+    (assembly_dir / "placements.json").write_text(json.dumps(payload))
+
+    placements = glb_export.load_placements(session_dir)
+    assert "lid" in placements
+    assert isinstance(placements["lid"], np.ndarray)
+    assert placements["lid"].shape == (4, 4)
+    assert placements["lid"][2, 3] == 25.0
+
+
+def test_load_placements_malformed_json_returns_empty(tmp_path):
+    session_dir = tmp_path / "session"
+    assembly_dir = session_dir / "assembly"
+    assembly_dir.mkdir(parents=True)
+    (assembly_dir / "placements.json").write_text("{not valid json")
+
+    assert glb_export.load_placements(session_dir) == {}
+
+
+def test_apply_placements_empty_placements_returns_unchanged(tmp_path):
+    components = _two_box_scene()
+    result = glb_export.apply_placements(components, {})
+    # Implemented contract: an empty placements dict is a no-op short-circuit
+    # that returns the very same object, not just an equal one.
+    assert result is components
+    assert set(result.keys()) == {"base", "lid"}
+
+
+def test_apply_placements_matched_component_transformed_unmatched_kept_identity(capsys):
+    components = _two_box_scene()
+    translate_z = np.eye(4)
+    translate_z[2, 3] = 25.0
+    placements = {"lid": translate_z}
+
+    result = glb_export.apply_placements(components, placements)
+
+    assert set(result.keys()) == {"base", "lid"}
+    # matched component transformed
+    assert not np.allclose(result["lid"].vertices, components["lid"].vertices)
+    assert np.allclose(
+        result["lid"].vertices[:, 2], components["lid"].vertices[:, 2] + 25.0
+    )
+    # unmatched component kept identity
+    assert np.allclose(result["base"].vertices, components["base"].vertices)
+    # original components dict/meshes not mutated
+    assert np.allclose(components["lid"].vertices, _two_box_scene()["lid"].vertices)
+
+    # the unmatched component is reported on stderr
+    captured = capsys.readouterr()
+    assert "no placement for component 'base'; using identity" in captured.err
+    # ...and the matched one is not warned about
+    assert "no placement for component 'lid'" not in captured.err
+
+
+def test_apply_placements_does_not_mutate_input_dict():
+    components = _two_box_scene()
+    original_keys = set(components.keys())
+    placements = {"base": np.eye(4)}
+    result = glb_export.apply_placements(components, placements)
+    assert set(components.keys()) == original_keys
+    assert result is not components
+
+
+def test_apply_placements_rotation_matches_expected_bounds():
+    # A 90-degree rotation about Z combined with a translation, expressed as
+    # a plain row-major 4x4 (not derived from cadquery), so a
+    # transposed/column-major regression in a caller's matrix construction
+    # would move vertices to the wrong place and fail this assertion.
+    lid = trimesh.creation.box(extents=(10, 20, 30))
+    components = {"lid": lid}
+
+    # 90 degree rotation about Z: x' = -y, y' = x, z' = z, plus translation.
+    theta = np.pi / 2
+    c, s = np.cos(theta), np.sin(theta)
+    matrix = np.array([
+        [c, -s, 0.0, 5.0],
+        [s, c, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 30.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+    placements = {"lid": matrix}
+
+    result = glb_export.apply_placements(components, placements)
+
+    expected = lid.copy()
+    expected.apply_transform(matrix)
+    assert np.allclose(result["lid"].vertices, expected.vertices)
+
+    # Box is centered at origin (z in -15..15); translation by 30 on Z
+    # shifts it to z in 15..45. Rotation about Z alone doesn't move z.
+    assert np.isclose(result["lid"].bounds[0][2], 15.0, atol=1e-6)
+    assert np.isclose(result["lid"].bounds[1][2], 45.0, atol=1e-6)
+
+
+def test_apply_placements_orphan_placement_warns(capsys):
+    components = {"base": trimesh.creation.box(extents=(1, 1, 1))}
+    placements = {
+        "base": np.eye(4),
+        "ghost": np.eye(4),
+    }
+
+    glb_export.apply_placements(components, placements)
+
+    captured = capsys.readouterr()
+    assert "no component for placement" in captured.err
+    assert "ghost" in captured.err
