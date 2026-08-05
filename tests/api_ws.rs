@@ -173,3 +173,65 @@ fn prompt_streams_deltas_from_fake_claude_and_finalizes_into_snapshot() {
         }
     }
 }
+
+/// Browsers don't apply CORS to WebSockets — the server must reject upgrade
+/// requests whose Origin doesn't match the Host (a hostile webpage opening
+/// ws://127.0.0.1:<port>).
+#[test]
+fn cross_origin_websocket_is_rejected() {
+    use tungstenite::client::IntoClientRequest;
+
+    let server = common::spawn();
+    let id = create_project(&server.base, "ws-evil-origin");
+
+    let mut req = server
+        .ws_url(&format!("/api/session?project={id}"))
+        .into_client_request()
+        .expect("client request");
+    req.headers_mut()
+        .insert("Origin", "http://evil.example".parse().unwrap());
+
+    let err = tungstenite::connect(req).expect_err("cross-origin upgrade must fail");
+    match err {
+        tungstenite::Error::Http(resp) => assert_eq!(resp.status(), 403),
+        other => panic!("expected HTTP 403 rejection, got: {other:?}"),
+    }
+}
+
+/// Same-origin browser connections (Origin matching Host) must still work.
+#[test]
+fn same_origin_websocket_is_accepted() {
+    use tungstenite::client::IntoClientRequest;
+
+    let server = common::spawn();
+    let id = create_project(&server.base, "ws-same-origin");
+
+    let host = server.base.strip_prefix("http://").unwrap().to_string();
+    let mut req = server
+        .ws_url(&format!("/api/session?project={id}"))
+        .into_client_request()
+        .expect("client request");
+    req.headers_mut()
+        .insert("Origin", format!("http://{host}").parse().unwrap());
+
+    let (mut ws, _) = tungstenite::connect(req).expect("same-origin upgrade must succeed");
+    if let MaybeTlsStream::Plain(stream) = ws.get_ref() {
+        stream.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
+    }
+    let snapshot = read_json(&mut ws);
+    assert_eq!(snapshot["type"], "snapshot");
+}
+
+/// Unknown project ids must not allocate server state: the connection gets an
+/// error message instead of a lazily-created AppCore.
+#[test]
+fn unknown_project_gets_error_not_a_core() {
+    let server = common::spawn();
+    let mut ws = connect(&server, "no-such-project");
+    let msg = read_json(&mut ws);
+    assert_eq!(msg["type"], "error");
+    assert!(
+        msg["message"].as_str().unwrap_or("").contains("unknown project"),
+        "unexpected error payload: {msg}"
+    );
+}

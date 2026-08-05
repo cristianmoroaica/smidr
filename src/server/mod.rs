@@ -30,6 +30,15 @@ impl ServerState {
     /// the WebSocket session channel (`server::ws`) uses to get a live core.
     pub fn core_for(&mut self, project_id: &str) -> Result<&mut AppCore, String> {
         if !self.cores.contains_key(project_id) {
+            // Only cache cores for projects that exist on disk — otherwise
+            // arbitrary ids from unauthenticated requests grow the map (and
+            // its AppCore instances) without bound.
+            let exists = crate::storage::project::list_projects()?
+                .iter()
+                .any(|p| p.path.file_name().is_some_and(|n| n.to_string_lossy() == project_id));
+            if !exists {
+                return Err(format!("unknown project: {project_id}"));
+            }
             let core = AppCore::new(self.config.clone(), None)?;
             self.cores.insert(project_id.to_string(), core);
         }

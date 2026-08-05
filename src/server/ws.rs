@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use futures_util::SinkExt;
@@ -37,8 +38,33 @@ async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<SharedState>,
     Query(q): Query<SessionQuery>,
+    headers: HeaderMap,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, q.project))
+    // Browsers don't apply CORS to WebSockets: without this check any webpage
+    // could open ws://127.0.0.1:<port> and drive the session. Same-origin
+    // only; requests without an Origin header (tests, CLI clients) pass.
+    if !origin_allowed(&headers) {
+        return (StatusCode::FORBIDDEN, "cross-origin websocket rejected").into_response();
+    }
+    ws.max_message_size(1 << 20)
+        .on_upgrade(move |socket| handle_socket(socket, state, q.project))
+}
+
+/// If an `Origin` header is present, its scheme must be http and its
+/// host:port must equal the request's `Host` header (i.e. same-origin).
+fn origin_allowed(headers: &HeaderMap) -> bool {
+    let origin = match headers.get("origin").and_then(|v| v.to_str().ok()) {
+        None => return true,
+        Some(o) => o,
+    };
+    let host = match headers.get("host").and_then(|v| v.to_str().ok()) {
+        None => return false,
+        Some(h) => h,
+    };
+    match origin.strip_prefix("http://") {
+        Some(origin_host) => origin_host == host,
+        None => false,
+    }
 }
 
 async fn handle_socket(mut socket: WebSocket, state: SharedState, project_id: String) {

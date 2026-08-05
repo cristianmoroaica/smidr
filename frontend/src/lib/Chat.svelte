@@ -1,5 +1,6 @@
 <script lang="ts">
   import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import { tick } from 'svelte';
 
   type Message = { role: string; content: string };
@@ -24,8 +25,9 @@
   let draft = $state('');
   let logEl: HTMLDivElement | undefined = $state();
 
+  // Model output and tool results are untrusted: sanitize before {@html}.
   function render(content: string): string {
-    return marked.parse(content, { async: false }) as string;
+    return DOMPurify.sanitize(marked.parse(content, { async: false }) as string);
   }
 
   function scrollToBottom() {
