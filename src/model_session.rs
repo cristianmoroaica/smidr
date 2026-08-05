@@ -3,7 +3,7 @@
 use crate::component::ComponentState;
 use crate::phase::Phase;
 use crate::spec::ModelSpec;
-use crate::storage::session::{ClaudeSessionMap, ConversationEntry, PhaseSessionData};
+use crate::storage::session::{ClaudeSessionMap, ConversationEntry, PendingQuestion, PhaseSessionData};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,10 @@ pub struct PhaseSession {
     /// the case for a brand-new session and for old sessions loaded before
     /// this field existed.
     pub approved: HashMap<String, bool>,
+    /// A question awaiting a user answer, mirrored from
+    /// `PhaseSessionData::pending_question`. `None` for a brand-new session
+    /// and for old sessions loaded before this field existed.
+    pub pending_question: Option<PendingQuestion>,
 }
 
 impl PhaseSession {
@@ -66,6 +70,7 @@ impl PhaseSession {
             python_path,
             briefing,
             approved: HashMap::new(),
+            pending_question: None,
         }
     }
 
@@ -149,6 +154,7 @@ impl PhaseSession {
             component_states: self.components.clone(),
             briefing: self.briefing.clone(),
             approved: self.approved.clone(),
+            pending_question: self.pending_question.clone(),
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -203,6 +209,7 @@ impl PhaseSession {
             python_path,
             briefing: data.briefing,
             approved: data.approved,
+            pending_question: data.pending_question,
         })
     }
 }
@@ -388,5 +395,50 @@ mod tests {
         ).unwrap();
         assert_eq!(loaded.approved.get("Spec"), Some(&true));
         assert_eq!(loaded.approved.get("Build"), None);
+    }
+
+    #[test]
+    fn test_pending_question_survives_save_and_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        assert!(session.pending_question.is_none());
+        session.pending_question = Some(crate::storage::session::PendingQuestion {
+            question: "How tall?".to_string(),
+            options: vec!["10mm".to_string(), "20mm".to_string()],
+        });
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        let pq = loaded.pending_question.expect("pending_question should survive save/load");
+        assert_eq!(pq.question, "How tall?");
+        assert_eq!(pq.options, vec!["10mm".to_string(), "20mm".to_string()]);
+    }
+
+    #[test]
+    fn test_pending_question_none_loads_as_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = PhaseSession::new(
+            tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+            None,
+        );
+        session.save().unwrap();
+
+        let loaded = PhaseSession::load(
+            &tmp.path().join("sess"),
+            60,
+            "python".to_string(),
+        ).unwrap();
+        assert!(loaded.pending_question.is_none());
     }
 }

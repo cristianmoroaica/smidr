@@ -33,6 +33,11 @@ pub struct PhaseSessionData {
     /// phase unapproved, which is the safe default.
     #[serde(default)]
     pub approved: HashMap<String, bool>,
+    /// A question awaiting a user answer, surfaced as an interactive card
+    /// by the web client. Old session.json files predate this field and
+    /// deserialize to `None`.
+    #[serde(default)]
+    pub pending_question: Option<PendingQuestion>,
 }
 
 /// A single conversation message
@@ -40,6 +45,15 @@ pub struct PhaseSessionData {
 pub struct ConversationEntry {
     pub role: String,
     pub content: String,
+}
+
+/// A question surfaced by `ask_question`/`ask_clarification` awaiting a
+/// user answer, with optional suggested-answer chips.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingQuestion {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
 }
 
 /// Create a new session directory inside a project.
@@ -110,6 +124,7 @@ mod tests {
             component_states: vec![],
             briefing: Some("briefing.md".into()),
             approved: HashMap::new(),
+            pending_question: None,
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         assert!(json.contains("\"phase\""));
@@ -148,6 +163,45 @@ mod tests {
         }"#;
         let data: PhaseSessionData = serde_json::from_str(json).unwrap();
         assert!(data.briefing.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_session_without_pending_question_field() {
+        // Old session.json files predate the `pending_question` field
+        // entirely — must still deserialize, yielding `None`.
+        let json = r#"{
+            "name": "test",
+            "created": "2026-03-16T12:00:00Z",
+            "phase": "Spec",
+            "current_component": null,
+            "claude_sessions": {},
+            "conversations": {},
+            "component_states": []
+        }"#;
+        let data: PhaseSessionData = serde_json::from_str(json).unwrap();
+        assert!(data.pending_question.is_none());
+    }
+
+    #[test]
+    fn test_pending_question_round_trips_through_serialization() {
+        let data = PhaseSessionData {
+            name: "test_session".into(),
+            created: "2026-03-16T12:00:00Z".into(),
+            phase: Phase::Spec,
+            current_component: None,
+            claude_sessions: ClaudeSessionMap::default(),
+            conversations: std::collections::HashMap::new(),
+            component_states: vec![],
+            briefing: None,
+            approved: HashMap::new(),
+            pending_question: Some(PendingQuestion {
+                question: "How wide?".into(),
+                options: vec!["20mm".into(), "40mm".into()],
+            }),
+        };
+        let json = serde_json::to_string_pretty(&data).unwrap();
+        let round_tripped: PhaseSessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.pending_question, data.pending_question);
     }
 
     #[test]

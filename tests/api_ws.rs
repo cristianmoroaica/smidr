@@ -26,6 +26,36 @@ echo '{"type":"user","session_id":"fake-1","message":{"content":[{"type":"tool_r
 echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"build done"}'
 "#;
 
+/// A fake `claude` script that emits a tool_use for `mcp__smidr__ask_question`
+/// with an `options` array, then the usual result event. Branches on the
+/// *prompt text* passed via `-p` (not invocation count / a stateful marker
+/// file): the test's initial "spec it" prompt gets the question; the
+/// follow-up "40mm" answer prompt gets a plain text reply instead, so the
+/// pending question actually resolves. Keying on prompt content — rather
+/// than "first call wins" — means an unrelated claude invocation (e.g. a
+/// future title-generation call) can't silently steal the one-shot question
+/// branch and leave this test failing confusingly.
+const FAKE_CLAUDE_ASK_QUESTION_SCRIPT: &str = r#"#!/bin/sh
+prompt=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-p" ]; then
+    prompt="$arg"
+  fi
+  prev="$arg"
+done
+case "$prompt" in
+  *"spec it"*)
+    echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__smidr__ask_question","input":{"question":"How wide should it be?","options":["20mm","40mm","60mm"]}}]}}'
+    echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"asked"}'
+    ;;
+  *)
+    echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"text","text":"got it, 40mm it is"}]}}'
+    echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"got it, 40mm it is"}'
+    ;;
+esac
+"#;
+
 /// Write the given fake `claude` script into a fresh temp dir and return the
 /// `PATH` value (fake dir prepended to the inherited `PATH`) that puts it
 /// ahead of any real `claude` on the search path. Shared by every test that
@@ -370,4 +400,145 @@ fn build_progress_lines_become_build_progress_messages() {
             }
         }
     }
+}
+
+/// A `mcp__smidr__ask_question` tool call with an `options` array must
+/// become a pinned `{"type":"question","question":..,"options":[..]}` WS
+/// message — arriving before the finalizing snapshot.
+#[test]
+fn ask_question_tool_call_emits_question_message_with_options() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_ASK_QUESTION_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "spec it",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+    loop {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see a question message within {MAX_FRAMES} frames");
+
+        let msg = read_json(&mut ws);
+        match msg["type"].as_str() {
+            Some("question") => {
+                assert_eq!(msg["question"], "How wide should it be?");
+                assert_eq!(msg["options"], json!(["20mm", "40mm", "60mm"]));
+                break;
+            }
+            Some("snapshot") => {
+                panic!("finalizing snapshot arrived before the question message: {msg}");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `snapshot.pending_question` must carry the outstanding question (and
+/// survive a fresh connection / reload) until the user answers it, at which
+/// point it goes back to `null`. The question must also land in
+/// `conversation` with `role == "question"`, never duplicated as an
+/// `assistant` message (the duplication fix).
+#[test]
+fn snapshot_carries_pending_question_until_answered() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_ASK_QUESTION_SCRIPT);
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "spec it",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames = 0;
+    const MAX_FRAMES: u32 = 200;
+    let mut saw_question = false;
+    let final_snapshot = loop {
+        frames += 1;
+        assert!(frames <= MAX_FRAMES, "did not see the finalizing snapshot within {MAX_FRAMES} frames");
+
+        let msg = read_json(&mut ws);
+        match msg["type"].as_str() {
+            Some("question") => saw_question = true,
+            Some("snapshot") => {
+                assert!(saw_question, "snapshot arrived before the question message");
+                break msg;
+            }
+            _ => {}
+        }
+    };
+
+    assert_eq!(final_snapshot["pending_question"]["question"], "How wide should it be?");
+    assert_eq!(final_snapshot["pending_question"]["options"], json!(["20mm", "40mm", "60mm"]));
+
+    let conversation = final_snapshot["conversation"].as_array().expect("conversation array");
+    let has_question_entry = conversation.iter().any(|entry| {
+        entry["role"] == "question" && entry["content"] == "How wide should it be?"
+    });
+    assert!(has_question_entry, "conversation should contain a role:question entry: {conversation:?}");
+    let has_duplicate_assistant = conversation.iter().any(|entry| {
+        entry["role"] == "assistant" && entry["content"] == "How wide should it be?"
+    });
+    assert!(!has_duplicate_assistant, "question must not also appear as an assistant message: {conversation:?}");
+
+    // A second connection to the same project must see the same
+    // pending_question — reload keeps the interactive card.
+    let mut ws2 = connect(&server, &id);
+    let snapshot2 = read_json(&mut ws2);
+    assert_eq!(snapshot2["pending_question"]["question"], "How wide should it be?");
+    assert_eq!(snapshot2["pending_question"]["options"], json!(["20mm", "40mm", "60mm"]));
+
+    // Close the second connection before answering. Both connections share
+    // one `AppCore`, and `poll_core_events` DRAINS `core.poll_events()` on
+    // whichever connection's poll loop happens to run first — if `ws2`
+    // stayed open, the post-answer finalizing snapshot could be delivered to
+    // it instead of `ws`, leaving `ws`'s read loop below waiting forever
+    // (flaky `WouldBlock` timeouts). Give the server-side task a moment to
+    // notice the close and exit before sending the answer.
+    drop(ws2);
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Answering (any prompt) resolves the pending question.
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "40mm",
+        "part_refs": [],
+        "lib_refs": [],
+    }));
+
+    let mut frames2 = 0;
+    loop {
+        frames2 += 1;
+        assert!(frames2 <= MAX_FRAMES, "did not see a snapshot after answering within {MAX_FRAMES} frames");
+        let msg = read_json(&mut ws);
+        if msg["type"] == "snapshot" {
+            assert_eq!(msg["pending_question"], Value::Null);
+            break;
+        }
+    }
+}
+
+/// A project with no outstanding question must report `pending_question` as
+/// JSON `null` in its initial snapshot.
+#[test]
+fn snapshot_pending_question_is_null_by_default() {
+    let server = common::spawn();
+    let id = create_project(&server.base, "widget");
+
+    let mut ws = connect(&server, &id);
+    let snapshot = read_json(&mut ws);
+
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["pending_question"], Value::Null);
 }

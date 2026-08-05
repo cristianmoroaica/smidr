@@ -27,6 +27,7 @@
   let libRefs = $state<string[]>([]);
   let viewing = $state<number | null>(null);
   let failedComponents = $state<string[]>([]);
+  let pendingQuestion = $state<{ question: string; options: string[] } | null>(null);
 
   let client: SessionClient | null = null;
 
@@ -42,6 +43,7 @@
         toolCalls = [];
         busy = false;
         failedComponents = [];
+        pendingQuestion = m.pending_question;
         break;
       case 'stream_delta':
         busy = true;
@@ -78,6 +80,9 @@
         } else {
           failedComponents = failedComponents.filter((c) => c !== m.component);
         }
+        break;
+      case 'question':
+        pendingQuestion = { question: m.question, options: m.options };
         break;
       case 'error':
         lastError = m.message;
@@ -152,6 +157,7 @@
   function onSend(text: string) {
     if (!client) return;
     busy = true;
+    pendingQuestion = null;
     conversation = [...conversation, { role: 'user', content: text }];
     client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [...libRefs] });
     selectedParts = [];
@@ -282,6 +288,7 @@
           {busy}
           {selectedParts}
           {libRefs}
+          {pendingQuestion}
           {onSend}
           {onCancel}
           {onRemovePart}

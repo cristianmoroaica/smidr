@@ -17,12 +17,14 @@ export type ServerMsg =
       conversation: { role: string; content: string }[];
       iterations: number[];
       spec: string | null;
+      pending_question: { question: string; options: string[] } | null;
     }
   | { type: 'stream_delta'; text: string }
   | { type: 'tool_call'; name: string; detail: string }
   | { type: 'phase_state'; phase: string; approved: boolean }
   | { type: 'iteration_added'; n: number }
   | { type: 'build_progress'; component: string; status: 'building' | 'done' | 'failed' }
+  | { type: 'question'; question: string; options: string[] }
   | { type: 'error'; message: string };
 
 export interface SessionHandlers {

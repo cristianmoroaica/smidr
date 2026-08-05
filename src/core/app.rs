@@ -41,6 +41,7 @@ pub enum CoreEvent {
     ResponseDone,
     BuildArtifact { stl: PathBuf },
     BuildProgress { component: String, status: String },
+    Question { question: String, options: Vec<String> },
     Error(String),
 }
 
@@ -79,6 +80,12 @@ pub struct AppCore {
     /// this on via `set_phase_gate(true)`, making `advance` require an
     /// explicit `approve_phase()` call for the current phase first.
     pub(crate) phase_gate: bool,
+
+    /// A question surfaced by `ask_question`/`ask_clarification` that has
+    /// not yet been resolved by a user answer. Mirrored to disk via
+    /// `session.phase_session`'s `pending_question`. Cleared by any user
+    /// prompt, a phase switch, or a wholesale conversation reset.
+    pub(crate) pending_question: Option<(String, Vec<String>)>,
 }
 
 impl AppCore {
@@ -136,6 +143,7 @@ impl AppCore {
             messages: Vec::new(),
             pending_events: Vec::new(),
             phase_gate: false,
+            pending_question: None,
         })
     }
 
@@ -231,6 +239,24 @@ impl AppCore {
     /// Full conversation log, in order.
     pub fn messages(&self) -> &[(String, String)] {
         &self.messages
+    }
+
+    /// The current unresolved question, if any, as `(question, options)`.
+    pub fn pending_question(&self) -> Option<&(String, Vec<String>)> {
+        self.pending_question.as_ref()
+    }
+
+    /// Resolve any pending question: clears in-memory state, mirrors `None`
+    /// into the phase session, and persists — but only when there was
+    /// something to clear, to avoid gratuitous disk writes.
+    pub(crate) fn clear_pending_question(&mut self) {
+        if self.pending_question.take().is_none() {
+            return;
+        }
+        if let Some(ref mut ps) = self.session.phase_session {
+            ps.pending_question = None;
+        }
+        self.session.save(self.phase);
     }
 
     // ---- accessors consumed by the web server ---------------------------
@@ -340,6 +366,7 @@ impl AppCore {
             self.claude.session_id = None;
             self.phase = Phase::Spec;
             self.active_refs.clear();
+            self.pending_question = None;
             self.push_message("system", "New session started.");
         }
 
@@ -438,7 +465,9 @@ impl AppCore {
         extracted_images.extend(self.pending_images.drain(..));
         let all_images = extracted_images;
 
-        // Add user message to conversation
+        // Add user message to conversation; any user answer resolves a
+        // pending question.
+        self.clear_pending_question();
         self.push_message("user", &clean_text);
         self.session.add_message(self.phase, "user", &clean_text);
         self.session.save(self.phase);
@@ -531,7 +560,7 @@ impl AppCore {
         let spec_conversation = self.session.conversations(Phase::Spec);
         if !spec_conversation.is_empty() {
             let summary: Vec<String> = spec_conversation.iter()
-                .filter(|e| e.role == "user" || e.role == "assistant")
+                .filter(|e| e.role == "user" || e.role == "assistant" || e.role == "question")
                 .take(20)
                 .map(|e| format!("{}: {}", e.role, e.content))
                 .collect();
@@ -679,6 +708,10 @@ impl AppCore {
 
                     self.phase = phase;
 
+                    self.pending_question = self.session.phase_session.as_ref()
+                        .and_then(|ps| ps.pending_question.as_ref())
+                        .map(|pq| (pq.question.clone(), pq.options.clone()));
+
                     let entries: Vec<(String, String)> = self.session.conversations(phase)
                         .iter()
                         .map(|e| (e.role.clone(), e.content.clone()))
@@ -723,6 +756,7 @@ impl AppCore {
             self.session.active_dir = None;
             self.session.phase_session = None;
             self.claude.session_id = None;
+            self.pending_question = None;
 
             self.reset_conversation(Vec::new());
 
@@ -1041,8 +1075,24 @@ impl AppCore {
         match name {
             "ask_question" | "ask_clarification" => {
                 if let Some(q) = tool.input.get("question").and_then(|v| v.as_str()) {
-                    self.session.add_message(self.phase, "assistant", q);
-                    self.push_message("assistant", q);
+                    let options: Vec<String> = tool.input.get("options")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+
+                    self.session.add_message(self.phase, "question", q);
+                    self.push_message("question", q);
+
+                    self.pending_question = Some((q.to_string(), options.clone()));
+                    if let Some(ref mut ps) = self.session.phase_session {
+                        ps.pending_question = Some(crate::storage::session::PendingQuestion {
+                            question: q.to_string(),
+                            options: options.clone(),
+                        });
+                    }
+                    self.session.save(self.phase);
+
+                    self.push_event(CoreEvent::Question { question: q.to_string(), options });
                 }
             }
             "record_spec_field" => {
@@ -1776,6 +1826,128 @@ mod tests {
                 .expect("reload should succeed");
 
             assert!(core.is_phase_approved(Phase::Spec));
+        });
+    }
+
+    #[test]
+    fn ask_question_tool_call_records_a_question_and_sets_pending_question() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__ask_question".to_string(),
+                input: serde_json::json!({
+                    "question": "How tall?",
+                    "options": ["10mm", "20mm"],
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            assert_eq!(
+                core.pending_question(),
+                Some(&("How tall?".to_string(), vec!["10mm".to_string(), "20mm".to_string()]))
+            );
+
+            let messages = core.messages();
+            assert!(
+                messages.iter().any(|(role, content)| role == "question" && content == "How tall?"),
+                "expected a 'question' role message, got: {messages:?}"
+            );
+            assert!(
+                !messages.iter().any(|(role, content)| role == "assistant" && content == "How tall?"),
+                "the question text must not also land as an 'assistant' message: {messages:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn ask_question_tool_call_persists_and_survives_reload() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__ask_question".to_string(),
+                input: serde_json::json!({
+                    "question": "How tall?",
+                    "options": ["10mm", "20mm"],
+                }),
+            };
+            core.handle_tool_call(&tool);
+
+            // Mirrored into the in-memory phase session...
+            let mirrored = core
+                .session
+                .phase_session
+                .as_ref()
+                .and_then(|ps| ps.pending_question.as_ref())
+                .expect("pending_question should be mirrored onto phase_session");
+            assert_eq!(mirrored.question, "How tall?");
+            assert_eq!(mirrored.options, vec!["10mm".to_string(), "20mm".to_string()]);
+
+            // ...and written to disk, restorable via a fresh load.
+            let dir = core.session.active_dir.clone().expect("active session dir");
+            let reloaded = crate::model_session::PhaseSession::load(
+                &dir,
+                core.build_timeout,
+                core.python_path.clone(),
+            )
+            .expect("session should reload");
+            let reloaded_pq = reloaded
+                .pending_question
+                .expect("pending_question should survive save/load");
+            assert_eq!(reloaded_pq.question, "How tall?");
+            assert_eq!(reloaded_pq.options, vec!["10mm".to_string(), "20mm".to_string()]);
+
+            // And load_session (the AppCore-level reload path) restores the
+            // in-memory `(question, options)` mirror too.
+            core.session.phase_session = None;
+            core.pending_question = None;
+            let idx = core.session.project_idx.unwrap_or(0);
+            let name = core.session.active_name.clone().expect("active session name");
+            core.load_session(idx, name);
+            assert_eq!(
+                core.pending_question(),
+                Some(&("How tall?".to_string(), vec!["10mm".to_string(), "20mm".to_string()]))
+            );
+        });
+    }
+
+    #[test]
+    fn ask_question_tool_call_without_options_yields_empty_options() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__ask_question".to_string(),
+                input: serde_json::json!({ "question": "How tall?" }),
+            };
+            core.handle_tool_call(&tool);
+
+            assert_eq!(
+                core.pending_question(),
+                Some(&("How tall?".to_string(), Vec::<String>::new()))
+            );
+        });
+    }
+
+    #[test]
+    fn submit_prompt_resolves_a_pending_question() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+
+            let tool = ToolCall {
+                name: "mcp__smidr__ask_question".to_string(),
+                input: serde_json::json!({
+                    "question": "How tall?",
+                    "options": ["10mm", "20mm"],
+                }),
+            };
+            core.handle_tool_call(&tool);
+            assert!(core.pending_question().is_some());
+
+            core.submit_prompt("20mm", &[], &[]);
+
+            assert!(core.pending_question().is_none());
         });
     }
 }

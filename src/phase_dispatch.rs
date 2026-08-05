@@ -218,6 +218,7 @@ impl AppCore {
             return Err(SwitchDenied::NotApproved);
         }
         self.phase = target;
+        self.clear_pending_question();
         // Force fresh Claude session so phase-specific system prompt and context
         // (spec conversation, goal.md, references) are re-injected. Without this,
         // --resume would continue the previous phase's session and silently drop
@@ -227,5 +228,94 @@ impl AppCore {
         self.push_message("system", &format!("Switched to {} phase", target.label()));
         self.session.save(self.phase);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claude_bridge::Dispatch;
+    use crate::config::Config;
+    use crate::test_util::HOME_LOCK;
+    use tempfile::TempDir;
+
+    fn with_test_home<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+        let result = f();
+        // Restore rather than unset: an unset HOME makes `dirs::home_dir()`
+        // fall back to the passwd entry, i.e. the developer's real ~/Smidr.
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        result
+    }
+
+    fn test_core(briefing: Option<String>) -> AppCore {
+        let mut core =
+            AppCore::new(Config::load(), briefing).expect("AppCore::new should succeed");
+        core.claude.dispatch = Dispatch::Capture(Vec::new());
+        core
+    }
+
+    #[test]
+    fn successful_phase_switch_clears_a_pending_question() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.pending_question = Some(("How tall?".to_string(), vec!["10mm".to_string()]));
+
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+
+            assert!(core.pending_question().is_none());
+        });
+    }
+
+    #[test]
+    fn successful_phase_switch_clears_pending_question_on_disk() {
+        with_test_home(|| {
+            let mut core = test_core(Some("A widget briefing".to_string()));
+            core.pending_question = Some(("How tall?".to_string(), vec!["10mm".to_string()]));
+            if let Some(ref mut ps) = core.session.phase_session {
+                ps.pending_question = Some(crate::storage::session::PendingQuestion {
+                    question: "How tall?".to_string(),
+                    options: vec!["10mm".to_string()],
+                });
+            }
+            core.session.save(core.phase);
+
+            assert_eq!(core.try_switch_phase(Phase::Build), Ok(()));
+
+            // In-memory mirror cleared...
+            assert!(core.pending_question().is_none());
+            // ...and the disk copy too: reload the session and check.
+            let dir = core.session.active_dir.clone().expect("active session dir");
+            let reloaded = crate::model_session::PhaseSession::load(
+                &dir,
+                core.build_timeout,
+                core.python_path.clone(),
+            )
+            .expect("session should reload");
+            assert!(reloaded.pending_question.is_none());
+        });
+    }
+
+    #[test]
+    fn denied_phase_switch_preserves_a_pending_question() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.pending_question = Some(("How tall?".to_string(), vec!["10mm".to_string()]));
+            core.set_phase_gate(true); // current phase (Spec) is not approved
+
+            let result = core.try_switch_phase(Phase::Build);
+
+            assert_eq!(result, Err(SwitchDenied::NotApproved));
+            assert_eq!(
+                core.pending_question(),
+                Some(&("How tall?".to_string(), vec!["10mm".to_string()]))
+            );
+        });
     }
 }

@@ -13,6 +13,7 @@
     busy,
     selectedParts,
     libRefs,
+    pendingQuestion,
     onSend,
     onCancel,
     onRemovePart,
@@ -25,6 +26,7 @@
     busy: boolean;
     selectedParts: string[];
     libRefs: string[];
+    pendingQuestion: { question: string; options: string[] } | null;
     onSend: (text: string) => void;
     onCancel: () => void;
     onRemovePart: (name: string) => void;
@@ -64,11 +66,28 @@
   }
 
   $effect(() => {
-    // Re-run whenever messages, streaming, or toolCalls change.
+    // Re-run whenever messages, streaming, toolCalls, or pendingQuestion change.
     void messages;
     void streaming;
     void toolCalls;
+    void pendingQuestion;
     tick().then(scrollToBottom);
+  });
+
+  // Index of the last role:'question' history entry whose text matches the
+  // outstanding pending question, or -1. That entry is the history copy of
+  // the live card, so it gets skipped and the live card (with chips) stands
+  // in its place. Deliberately NOT "is it the last message": the server
+  // appends the model's closing assistant text after the question entry in a
+  // real streamed turn (the tool_use event lands ticks before the result),
+  // so a positional check would let the question render twice.
+  const liveQuestionIndex = $derived.by(() => {
+    if (!pendingQuestion) return -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'question' && m.content === pendingQuestion.question) return i;
+    }
+    return -1;
   });
 
   function submit() {
@@ -99,11 +118,20 @@
 
 <div class="chat">
   <div class="log" bind:this={logEl}>
-    {#each messages as m}
-      <div class="bubble {m.role}">
-        <div class="role-label">{m.role}</div>
-        <div class="content">{@html render(m.content)}</div>
-      </div>
+    {#each messages as m, i}
+      {#if m.role === 'question'}
+        {#if i !== liveQuestionIndex}
+          <div class="question-card">
+            <div class="question-label">Question</div>
+            <div class="content">{@html render(m.content)}</div>
+          </div>
+        {/if}
+      {:else}
+        <div class="bubble {m.role}">
+          <div class="role-label">{m.role}</div>
+          <div class="content">{@html render(m.content)}</div>
+        </div>
+      {/if}
     {/each}
 
     {#if streaming}
@@ -119,6 +147,21 @@
         <pre class="tool-detail">{tc.detail}</pre>
       </details>
     {/each}
+
+    {#if pendingQuestion}
+      <div class="question-card">
+        <div class="question-label">Question</div>
+        <div class="content">{@html render(pendingQuestion.question)}</div>
+        {#if pendingQuestion.options.length > 0}
+          <div class="question-options">
+            {#each pendingQuestion.options as opt}
+              <button class="option-chip" onclick={() => onSend(opt)}>{opt}</button>
+            {/each}
+          </div>
+          <p class="question-hint">or type your own answer below</p>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div class="composer-wrap">
@@ -292,6 +335,59 @@
 
   .content :global(a) {
     color: var(--accent, #4f8ff7);
+  }
+
+  .question-card {
+    align-self: stretch;
+    max-width: 100%;
+    background: var(--bg-raised, #22262f);
+    border: 1px solid var(--border, #2e333d);
+    border-left: 3px solid var(--accent, #4f8ff7);
+    border-radius: var(--radius-md, 10px);
+    padding: 0.55rem 0.8rem;
+  }
+
+  .question-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent, #4f8ff7);
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .question-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+  }
+
+  .option-chip {
+    font: inherit;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--bg-inset, #0d0f13);
+    border: 1px solid var(--accent-border, rgba(79, 143, 247, 0.45));
+    color: var(--accent, #4f8ff7);
+    cursor: pointer;
+    transition: background 120ms;
+  }
+
+  .option-chip:hover {
+    background: var(--accent-soft, rgba(79, 143, 247, 0.14));
+  }
+
+  .option-chip:focus-visible {
+    box-shadow: var(--focus-ring, 0 0 0 2px rgba(79, 143, 247, 0.5));
+    outline: none;
+  }
+
+  .question-hint {
+    margin: 0.4rem 0 0;
+    color: var(--text-muted, #6b7280);
+    font-size: 0.75rem;
   }
 
   .tool-call {

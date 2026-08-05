@@ -247,11 +247,20 @@ IMPORT_STEP_TOOL = {
 SPEC_TOOLS = [
     {
         "name": "ask_question",
-        "description": "Ask the user one clarifying question about their design requirements.",
+        "description": (
+            "Ask the user ONE clarifying question about their design requirements. "
+            "ALWAYS supply 2-4 short plausible suggested answers in `options` "
+            "(the user can also type a free-text answer)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The question to ask"}
+                "question": {"type": "string", "description": "The question to ask"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2-4 short suggested answers the user can pick from"
+                }
             },
             "required": ["question"]
         }
@@ -284,11 +293,20 @@ SPEC_TOOLS = [
 BUILD_TOOLS = [
     {
         "name": "ask_clarification",
-        "description": "Ask the user a clarifying question about the design or build.",
+        "description": (
+            "Ask the user a clarifying question about the design or build. "
+            "ALWAYS supply 2-4 short plausible suggested answers in `options` "
+            "(the user can also type a free-text answer)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The question to ask"}
+                "question": {"type": "string", "description": "The question to ask"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2-4 short suggested answers the user can pick from"
+                }
             },
             "required": ["question"]
         }
@@ -318,11 +336,20 @@ BUILD_TOOLS = [
 REFINE_TOOLS = [
     {
         "name": "ask_clarification",
-        "description": "Ask the user a clarifying question about the aesthetic refinement.",
+        "description": (
+            "Ask the user a clarifying question about the aesthetic refinement. "
+            "ALWAYS supply 2-4 short plausible suggested answers in `options` "
+            "(the user can also type a free-text answer)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The question to ask"}
+                "question": {"type": "string", "description": "The question to ask"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2-4 short suggested answers the user can pick from"
+                }
             },
             "required": ["question"]
         }
@@ -873,7 +900,11 @@ def handle_tool_call(name, arguments, session_dir):
 
     if name in ("ask_question", "ask_clarification"):
         q = arguments.get("question", "")
-        return [{"type": "text", "text": f"Question delivered to user: {q}"}]
+        opts = arguments.get("options") or []
+        text = f"Question delivered to user: {q}"
+        if opts:
+            text += f" (options: {', '.join(str(o) for o in opts)})"
+        return [{"type": "text", "text": text}]
 
     if name == "record_spec_field":
         category = arguments.get("category", "")

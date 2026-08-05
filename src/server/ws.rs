@@ -4,8 +4,12 @@
 //! names, message `type` values) must not change without updating the spec.
 //!
 //! client→server: `prompt` / `approve_phase` / `advance` / `go_back` / `cancel_stream`
-//! server→client: `snapshot` / `stream_delta` / `tool_call` / `phase_state` /
-//!                 `iteration_added` / `build_progress` / `error`
+//! server→client: `snapshot` / `stream_delta` / `tool_call` / `question` /
+//!                 `phase_state` / `iteration_added` / `build_progress` / `error`
+//!
+//! `snapshot` additionally carries a `pending_question` field (see
+//! `pending_question_value`) so a reconnecting/reloading client keeps the
+//! interactive question card until it's answered.
 
 use std::time::Duration;
 
@@ -209,14 +213,33 @@ fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {
         None => return Vec::new(),
     };
 
-    core.poll_events()
-        .into_iter()
-        .flat_map(|ev| match ev {
+    // `AppCore::poll_events` (src/core/app.rs) drains the background-result
+    // channel — which can produce `ResponseDone` — before draining queued
+    // tool calls, so it can (rarely, when a fast tool-call/result pair lands
+    // within the same poll tick) yield a `ResponseDone` ahead of the
+    // `Question`/other events the tool call itself produced, even though the
+    // tool call happened first in wall-clock time. The root cause lives in
+    // app.rs's drain order and is out of scope here (owned by a sibling
+    // spec); this is a deliberate WS-layer invariant to compensate: the
+    // finalizing `snapshot` must never precede events describing what
+    // happened during the turn it's summarizing, so `ResponseDone`-derived
+    // snapshots are held back and flushed only after every other event in
+    // this batch, preserving their relative order. `StreamDelta` and
+    // `ToolCall`/`Question` events for the SAME turn always precede its
+    // `ResponseDone` within `poll_events`'s own per-source ordering, and
+    // `Error` and `ResponseDone` are mutually exclusive per turn, so this
+    // reorder only ever moves a snapshot later, never drops or duplicates an
+    // event.
+    let mut out = Vec::new();
+    let mut snapshots = Vec::new();
+
+    for ev in core.poll_events() {
+        match ev {
             CoreEvent::StreamDelta(text) => {
-                Some(json!({"type": "stream_delta", "text": text}))
+                out.push(json!({"type": "stream_delta", "text": text}));
             }
             CoreEvent::ToolCall { name, detail } => {
-                Some(json!({"type": "tool_call", "name": name, "detail": detail}))
+                out.push(json!({"type": "tool_call", "name": name, "detail": detail}));
             }
             CoreEvent::BuildArtifact { .. } => {
                 // The iteration number is derived from the GLB artifacts
@@ -224,17 +247,27 @@ fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {
                 // (which counts build attempts, not successful exports). If
                 // no GLB exists yet (e.g. the export step hasn't run), emit
                 // nothing for this event.
-                crate::server::artifacts::glb_iterations(core.session_dir())
-                    .last()
-                    .map(|n| json!({"type": "iteration_added", "n": n}))
+                if let Some(n) = crate::server::artifacts::glb_iterations(core.session_dir()).last() {
+                    out.push(json!({"type": "iteration_added", "n": n}));
+                }
             }
             CoreEvent::BuildProgress { component, status } => {
-                Some(build_progress_value(&component, &status))
+                out.push(build_progress_value(&component, &status));
             }
-            CoreEvent::Error(message) => Some(json!({"type": "error", "message": message})),
-            CoreEvent::ResponseDone => Some(snapshot_value(core)),
-        })
-        .collect()
+            CoreEvent::Question { question, options } => {
+                out.push(json!({"type": "question", "question": question, "options": options}));
+            }
+            CoreEvent::Error(message) => {
+                out.push(json!({"type": "error", "message": message}));
+            }
+            CoreEvent::ResponseDone => {
+                snapshots.push(snapshot_value(core));
+            }
+        }
+    }
+
+    out.extend(snapshots);
+    out
 }
 
 fn string_array(v: &Value, key: &str) -> Vec<String> {
@@ -252,6 +285,7 @@ fn snapshot_value(core: &AppCore) -> Value {
         .collect();
     let iterations: Vec<u32> = crate::server::artifacts::glb_iterations(core.session_dir());
     let spec = spec_value(core);
+    let pending_question = pending_question_value(core);
     json!({
         "type": "snapshot",
         "phase": core.phase().label(),
@@ -259,7 +293,18 @@ fn snapshot_value(core: &AppCore) -> Value {
         "conversation": conversation,
         "iterations": iterations,
         "spec": spec,
+        "pending_question": pending_question,
     })
+}
+
+/// `pending_question` for the snapshot: `{"question":<str>,"options":[<str>...]}`
+/// when a question is awaiting an answer, else JSON `null`. Pinned shape —
+/// keeps a reloading/reconnecting client's interactive question card alive.
+fn pending_question_value(core: &AppCore) -> Value {
+    match core.pending_question() {
+        Some((question, options)) => json!({"question": question, "options": options}),
+        None => Value::Null,
+    }
 }
 
 /// `spec` for the snapshot: prefer the in-memory spec narrative (populated
