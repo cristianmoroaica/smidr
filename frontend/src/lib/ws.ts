@@ -8,7 +8,8 @@ export type ClientMsg =
   | { type: 'advance' }
   | { type: 'go_back'; target: 'spec' | 'build' }
   | { type: 'cancel_stream' }
-  | { type: 'deny_phase_switch' };
+  | { type: 'deny_phase_switch' }
+  | { type: 'set_engine'; engine: string };
 
 export type ServerMsg =
   | {
@@ -20,6 +21,7 @@ export type ServerMsg =
       spec: string | null;
       pending_question: { question: string; options: string[] } | null;
       pending_phase_switch: { target: string; reason: string } | null;
+      engine: string;
     }
   | { type: 'stream_delta'; text: string }
   | { type: 'tool_call'; name: string; detail: string }

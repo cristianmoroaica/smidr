@@ -3,9 +3,12 @@ mod claude_bridge;
 mod component;
 mod config;
 mod core;
+mod engine_config;
 mod phase_dispatch;
 mod image;
+mod mcp_client;
 mod model_session;
+mod openai_engine;
 mod parser;
 mod phase;
 mod prompt_builder;
@@ -43,10 +46,29 @@ struct Cli {
 
 /// Preview is now the in-browser three.js viewer, so there is no external
 /// viewer binary to check for.
-fn startup_checks(config: &Config) -> Result<(), String> {
-    claude::check_claude()?;
-    python::check_python(&config.python_path())?;
-    Ok(())
+///
+/// Engine-aware: a missing `claude` CLI no longer short-circuits the python
+/// check (both always run), and never aborts startup — it only disables the
+/// built-in Claude engine (surfaced as `available:false` by
+/// `GET /api/engines`). Every warning is printed; when claude is missing AND
+/// no local engines are configured, an additional setup hint is printed so
+/// the user isn't left with a server that can run no engine at all.
+fn startup_checks(config: &Config) {
+    let claude_missing = if let Err(e) = claude::check_claude() {
+        eprintln!("Startup warning: {e}");
+        true
+    } else {
+        false
+    };
+    if let Err(e) = python::check_python(&config.python_path()) {
+        eprintln!("Startup warning: {e}");
+    }
+    if claude_missing && engine_config::load_endpoints().is_empty() {
+        eprintln!(
+            "Hint: no engines available — install the claude CLI, or configure a local \
+             endpoint in ~/.config/smidr/engines.toml"
+        );
+    }
 }
 
 fn main() {
@@ -79,10 +101,8 @@ fn main() {
 
     let config = Config::load();
 
-    // Non-fatal startup checks — warn but continue
-    if let Err(e) = startup_checks(&config) {
-        eprintln!("Startup warning: {e}");
-    }
+    // Non-fatal startup checks — warn but continue; the server always starts.
+    startup_checks(&config);
 
     let no_browser = cli.no_browser;
     let result = server::run_blocking(config, cli.port, briefing, move |addr| {

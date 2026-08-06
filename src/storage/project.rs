@@ -9,6 +9,11 @@ pub struct ProjectMeta {
     pub created: String,
     #[serde(default)]
     pub description: String,
+    /// Persisted engine selection: `"claude"` or `"<endpoint>:<model>"`.
+    /// `None` (the default, and what every pre-existing `project.json`
+    /// deserializes to) means the built-in Claude CLI engine.
+    #[serde(default)]
+    pub engine: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,12 +102,14 @@ pub fn list_projects() -> Result<Vec<Project>, String> {
                 name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
                 created: String::new(),
                 description: String::new(),
+                engine: None,
             })
         } else {
             ProjectMeta {
                 name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
                 created: String::new(),
                 description: String::new(),
+                engine: None,
             }
         };
 
@@ -137,6 +144,7 @@ pub fn create_project(name: &str, description: &str) -> Result<PathBuf, String> 
         name: name.to_string(),
         created: chrono::Utc::now().to_rfc3339(),
         description: description.to_string(),
+        engine: None,
     };
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("Failed to serialize project: {e}"))?;
@@ -144,6 +152,38 @@ pub fn create_project(name: &str, description: &str) -> Result<PathBuf, String> 
         .map_err(|e| format!("Failed to write project.json: {e}"))?;
 
     Ok(path)
+}
+
+/// Set (or clear, with `None`) the persisted engine selection for a project.
+/// Reads the existing `project.json` if present and valid, falling back to
+/// a fresh meta named after the directory when it's absent or corrupt (same
+/// fallback `list_projects` uses), then rewrites it pretty-printed with
+/// `engine` set to `engine`.
+pub fn set_project_engine(project_dir: &std::path::Path, engine: Option<&str>) -> Result<(), String> {
+    let meta_path = project_dir.join("project.json");
+    let mut meta = if meta_path.exists() {
+        let json = std::fs::read_to_string(&meta_path).unwrap_or_default();
+        serde_json::from_str(&json).unwrap_or_else(|_| ProjectMeta {
+            name: project_dir.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            created: String::new(),
+            description: String::new(),
+            engine: None,
+        })
+    } else {
+        ProjectMeta {
+            name: project_dir.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            created: String::new(),
+            description: String::new(),
+            engine: None,
+        }
+    };
+
+    meta.engine = engine.map(|s| s.to_string());
+
+    let json = serde_json::to_string_pretty(&meta)
+        .map_err(|e| format!("Failed to serialize project: {e}"))?;
+    std::fs::write(&meta_path, json).map_err(|e| format!("Failed to write project.json: {e}"))?;
+    Ok(())
 }
 
 /// Delete a project and all its sessions.
@@ -239,6 +279,36 @@ mod tests {
             ensure_root().unwrap();
 
             assert!(home.join("Smidr/SomeProj/project.json").exists());
+        });
+    }
+
+    #[test]
+    fn test_set_project_engine_round_trips_and_legacy_meta_defaults_to_none() {
+        with_test_root(|| {
+            ensure_root().unwrap();
+            let project_path = create_project("EngineProj", "").unwrap();
+
+            // Freshly created project has no engine set.
+            let projects = list_projects().unwrap();
+            let proj = projects.iter().find(|p| p.meta.name == "EngineProj").unwrap();
+            assert_eq!(proj.meta.engine, None);
+
+            set_project_engine(&project_path, Some("ollama:gpt-oss:120b")).unwrap();
+            let projects = list_projects().unwrap();
+            let proj = projects.iter().find(|p| p.meta.name == "EngineProj").unwrap();
+            assert_eq!(proj.meta.engine.as_deref(), Some("ollama:gpt-oss:120b"));
+
+            // A legacy project.json written before this field existed still
+            // deserializes, with engine defaulting to None.
+            let legacy_dir = root_dir().join("LegacyProj");
+            std::fs::create_dir_all(&legacy_dir).unwrap();
+            std::fs::write(
+                legacy_dir.join("project.json"),
+                r#"{"name":"LegacyProj","created":"","description":""}"#,
+            ).unwrap();
+            let projects = list_projects().unwrap();
+            let legacy = projects.iter().find(|p| p.meta.name == "LegacyProj").unwrap();
+            assert_eq!(legacy.meta.engine, None);
         });
     }
 

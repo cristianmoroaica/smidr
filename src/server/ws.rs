@@ -4,7 +4,7 @@
 //! names, message `type` values) must not change without updating the spec.
 //!
 //! client→server: `prompt` / `approve_phase` / `advance` / `go_back` /
-//!                 `cancel_stream` / `deny_phase_switch`
+//!                 `cancel_stream` / `deny_phase_switch` / `set_engine`
 //! server→client: `snapshot` / `stream_delta` / `tool_call` / `question` /
 //!                 `phase_state` / `iteration_added` / `build_progress` /
 //!                 `phase_switch_request` / `error`
@@ -15,7 +15,20 @@
 //! keeps the interactive question card / phase-switch-request modal alive
 //! until it's answered/denied, plus a `baseline_iteration` field (number or
 //! `null`) carrying the iteration locked as the Refine-phase ghost-diff
-//! baseline via `POST /api/projects/{id}/baseline`, if any.
+//! baseline via `POST /api/projects/{id}/baseline`, if any, and an `engine`
+//! field (string, never null) carrying the currently-selected engine id:
+//! `"claude"` or `"<endpoint>:<model>"`.
+//!
+//! `set_engine` (client→server): `{"type":"set_engine","engine":<id>}` where
+//! `<id>` is `"claude"` (resets to the built-in engine) or
+//! `"<endpoint>:<model>"` — split on the FIRST colon only, so a model name
+//! that itself contains a colon (e.g. `"gpt-oss:120b"`) round-trips
+//! correctly; endpoint names are therefore forbidden from containing `:`.
+//! The endpoint must be a name from `GET /api/engines`; an unknown endpoint
+//! yields an `error` message and leaves the current engine unchanged. On
+//! success the choice is persisted to the project's `project.json` and a
+//! fresh `snapshot` is replied. Takes effect on the NEXT prompt — a turn
+//! already in flight finishes on the engine it started with.
 
 use std::time::Duration;
 
@@ -209,6 +222,16 @@ fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> V
             core.clear_pending_phase_switch();
             vec![snapshot_value(core)]
         }
+        Some("set_engine") => {
+            let engine = match parsed.get("engine").and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => return vec![error_msg("invalid set_engine")],
+            };
+            match core.set_engine(engine) {
+                Ok(()) => vec![snapshot_value(core)],
+                Err(e) => vec![error_msg(&e)],
+            }
+        }
         _ => vec![error_msg("unknown message type")],
     }
 }
@@ -310,6 +333,7 @@ fn snapshot_value(core: &AppCore) -> Value {
         "pending_question": pending_question,
         "pending_phase_switch": pending_phase_switch,
         "baseline_iteration": core.baseline_iteration(),
+        "engine": core.engine_id(),
     })
 }
 

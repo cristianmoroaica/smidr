@@ -1,6 +1,7 @@
 <script lang="ts">
   import Chat from './lib/Chat.svelte';
   import Stepper from './lib/Stepper.svelte';
+  import EnginePicker from './lib/EnginePicker.svelte';
   import Viewer from './lib/Viewer.svelte';
   import Timeline from './lib/Timeline.svelte';
   import SpecPanel from './lib/SpecPanel.svelte';
@@ -34,6 +35,7 @@
   let approveModal = $state<'approve' | 'export' | null>(null);
   let partsPanelOpen = $state(false);
   let pendingPhaseSwitch = $state<{ target: string; reason: string } | null>(null);
+  let engine = $state('claude');
 
   let client: SessionClient | null = $state(null);
 
@@ -52,6 +54,7 @@
         pendingQuestion = m.pending_question;
         pendingPhaseSwitch = m.pending_phase_switch;
         buildProgress = [];
+        engine = m.engine ?? 'claude';
         break;
       case 'stream_delta':
         busy = true;
@@ -295,6 +298,9 @@
   {:else}
     <header class="appbar">
       <span class="wordmark">Smiðr</span>
+      <div class="appbar-engine">
+        <EnginePicker {engine} onSelect={(e) => client?.send({ type: 'set_engine', engine: e })} />
+      </div>
       <div class="appbar-stepper">
         <Stepper {phase} {approved} {onApprove} {onAdvance} {onBack} />
       </div>
@@ -456,6 +462,10 @@
     background: var(--bg-app);
     border-bottom: 1px solid var(--border);
     padding-left: 1rem;
+  }
+
+  .appbar-engine {
+    flex: 0 0 auto;
   }
 
   .appbar-stepper {

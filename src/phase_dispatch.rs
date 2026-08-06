@@ -12,13 +12,65 @@ use crate::phase::Phase;
 use crate::{reference, reference_detect};
 
 impl AppCore {
+    /// Persisted conversation for `phase` as `(role, content)` pairs, for
+    /// the OpenAI-compat engine's message history (the Claude CLI path
+    /// ignores this parameter entirely). The just-pushed user prompt is
+    /// dropped from the tail if present — `OpenAiTurn` appends `prompt`
+    /// itself, so including it here would duplicate the final user turn.
+    ///
+    /// The persisted entry is the plain (`clean_text`) user message, while
+    /// `prompt` handed to `send_phase_prompt` may be a decorated superstring
+    /// of it (`<selected_part>` wrapping, spec briefing prefix, `[Reference
+    /// context]` prefix — see `send_spec_prompt`/`AppCore::submit_prompt`).
+    /// Dropping on `prompt.ends_with(&last.1)` rather than exact equality
+    /// catches every decorated case, since the persisted text is always the
+    /// tail of what actually gets sent. (Callers may equivalently pass the
+    /// undecorated `text`, since every decoration is a *prefix*: whatever
+    /// suffix relation holds for `prompt` holds for `text` too.)
+    fn phase_history(&self, phase: Phase, prompt: &str) -> Vec<(String, String)> {
+        let mut history: Vec<(String, String)> = self
+            .session
+            .conversations(phase)
+            .iter()
+            .map(|entry| (entry.role.clone(), entry.content.clone()))
+            .collect();
+        if let Some(last) = history.last() {
+            if last.0 == "user" && !last.1.is_empty() && prompt.ends_with(last.1.as_str()) {
+                history.pop();
+            }
+        }
+        history
+    }
+
     // -- Spec phase --
 
     pub(crate) fn send_spec_prompt(&mut self, text: &str, images: Vec<PathBuf>) {
         let ref_context = self.build_ref_context();
+        let history = self.phase_history(Phase::Spec, text);
+
+        // Whether this turn must carry the briefing block (and skip the
+        // in-prompt "[Reference context]" prefix). The condition is
+        // per-engine, because "does the model already know the briefing?"
+        // means different things on each:
+        //
+        // * Claude CLI keeps conversation state server-side keyed by
+        //   `session_id`, and `session_id == None` means the next invocation
+        //   starts a BRAND NEW session with zero memory. That happens on
+        //   every reconnect/restart (`open_project`) and every phase switch
+        //   (`try_switch_phase`), not just on the literal first turn — so the
+        //   briefing must be re-sent exactly then. This is the historical
+        //   behavior and must stay byte-for-byte identical.
+        // * The OpenAI-compat engine is stateless: every turn re-sends the
+        //   reconstructed `history`, so "the model has seen prior turns" is
+        //   exactly `!history.is_empty()`. It never sets `session_id`, so a
+        //   session_id check there would re-prepend the briefing forever.
+        let is_first_turn = match self.claude.engine {
+            claude_bridge::EngineKind::ClaudeCli => self.claude.session_id.is_none(),
+            claude_bridge::EngineKind::OpenAiCompat { .. } => history.is_empty(),
+        };
 
         // Build briefing context if available (only on first message — subsequent turns skip this)
-        let briefing_context = if self.claude.session_id.is_none() {
+        let briefing_context = if is_first_turn {
             self.session.phase_session.as_ref()
                 .and_then(|ps| ps.briefing.as_ref())
                 .and_then(|rel_path| {
@@ -40,7 +92,7 @@ impl AppCore {
             None
         };
 
-        let prompt = if self.claude.session_id.is_some() {
+        let prompt = if !is_first_turn {
             // Continuing session — only add ref context (briefing already sent on first message)
             if let Some(ref ctx) = ref_context {
                 format!("[Reference context]\n{}\n\n{}", ctx, text)
@@ -61,7 +113,9 @@ impl AppCore {
         let mcp_config = claude_bridge::generate_mcp_config(
             "spec", session_dir.as_deref()
         ).ok();
-        self.claude.send_phase_prompt("spec", &prompt, &images, ref_context.as_deref(), mcp_config);
+        self.claude.send_phase_prompt(
+            "spec", &prompt, &images, ref_context.as_deref(), &history, session_dir, mcp_config,
+        );
     }
 
     pub(crate) fn handle_spec_response(&mut self, response: &str) {
@@ -112,7 +166,10 @@ impl AppCore {
             "build", session_dir.as_deref()
         ).ok();
         let ctx = self.build_phase_context();
-        self.claude.send_phase_prompt("build", text, &images, ctx.as_deref(), mcp_config);
+        let history = self.phase_history(Phase::Build, text);
+        self.claude.send_phase_prompt(
+            "build", text, &images, ctx.as_deref(), &history, session_dir, mcp_config,
+        );
     }
 
     // -- Refine phase --
@@ -134,7 +191,10 @@ impl AppCore {
             "refine", session_dir.as_deref()
         ).ok();
         let ctx = self.build_phase_context();
-        self.claude.send_phase_prompt("refine", text, &images, ctx.as_deref(), mcp_config);
+        let history = self.phase_history(Phase::Refine, text);
+        self.claude.send_phase_prompt(
+            "refine", text, &images, ctx.as_deref(), &history, session_dir, mcp_config,
+        );
     }
 
     pub(crate) fn handle_param_edit(&mut self, text: &str) {
@@ -339,6 +399,187 @@ mod tests {
             AppCore::new(Config::load(), briefing).expect("AppCore::new should succeed");
         core.claude.dispatch = Dispatch::Capture(Vec::new());
         core
+    }
+
+    #[test]
+    fn phase_history_drops_a_decorated_trailing_user_entry() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.ensure_session_dir();
+            core.session.add_message(Phase::Spec, "user", "how wide should it be?");
+
+            // The dispatched prompt is a decorated superstring of the
+            // persisted plain text — e.g. wrapped in <selected_part> lines,
+            // or prefixed with the spec briefing / "[Reference context]"
+            // block (see `AppCore::submit_prompt` / `send_spec_prompt`).
+            let decorated = format!(
+                "<selected_part>bracket</selected_part>\n\nhow wide should it be?"
+            );
+            let history = core.phase_history(Phase::Spec, &decorated);
+
+            assert!(
+                history.is_empty(),
+                "the trailing user entry must be dropped so OpenAiTurn doesn't send it twice: {history:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn phase_history_keeps_prior_turns_and_only_drops_the_matching_tail() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.ensure_session_dir();
+            core.session.add_message(Phase::Spec, "user", "first question");
+            core.session.add_message(Phase::Spec, "assistant", "first answer");
+            core.session.add_message(Phase::Spec, "user", "second question");
+
+            let history = core.phase_history(Phase::Spec, "second question");
+
+            assert_eq!(
+                history,
+                vec![
+                    ("user".to_string(), "first question".to_string()),
+                    ("assistant".to_string(), "first answer".to_string()),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn phase_history_keeps_the_trailing_entry_when_prompt_does_not_end_with_it() {
+        with_test_home(|| {
+            let mut core = test_core(None);
+            core.ensure_session_dir();
+            core.session.add_message(Phase::Spec, "user", "unrelated stored text");
+
+            // `prompt` here is NOT a superstring of the stored entry (this
+            // should not happen in practice, but the method must not drop
+            // history it can't prove is a duplicate).
+            let history = core.phase_history(Phase::Spec, "a completely different prompt");
+
+            assert_eq!(history, vec![("user".to_string(), "unrelated stored text".to_string())]);
+        });
+    }
+
+    /// Set up a core with a briefing file wired in and Capture dispatch.
+    /// (Bypasses the `AppCore::new` briefing-project bootstrap, which isn't
+    /// needed to exercise `send_spec_prompt`'s gating logic.)
+    fn briefed_core() -> AppCore {
+        let mut core = test_core(None);
+        core.ensure_session_dir();
+        core.claude.dispatch = Dispatch::Capture(Vec::new());
+        let dir = core.session.active_dir.clone().expect("active dir");
+        std::fs::write(dir.join("briefing.md"), "A widget briefing").unwrap();
+        if let Some(ref mut ps) = core.session.phase_session {
+            ps.briefing = Some("briefing.md".to_string());
+        }
+        core
+    }
+
+    fn captured(core: &AppCore) -> &[crate::claude_bridge::CapturedPrompt] {
+        let Dispatch::Capture(log) = &core.claude.dispatch else {
+            panic!("dispatch should still be Capture");
+        };
+        log
+    }
+
+    #[test]
+    fn claude_cli_briefing_gating_stays_session_id_based() {
+        with_test_home(|| {
+            let mut core = briefed_core();
+            assert!(matches!(core.claude.engine, claude_bridge::EngineKind::ClaudeCli));
+
+            core.send_spec_prompt("first question", Vec::new());
+            // The real turn records the conversation and a claude session id.
+            core.session.add_message(Phase::Spec, "user", "first question");
+            core.session.add_message(Phase::Spec, "assistant", "some reply");
+            core.claude.session_id = Some("sess-1".to_string());
+
+            core.send_spec_prompt("second question", Vec::new());
+
+            // Reconnect / phase switch: `open_project` and `try_switch_phase`
+            // both clear session_id, so the NEXT claude invocation starts a
+            // brand new session with zero memory — the briefing must be
+            // re-sent, exactly as it was before local engines existed.
+            core.claude.session_id = None;
+            core.send_spec_prompt("third question", Vec::new());
+
+            let log = captured(&core);
+            assert_eq!(log.len(), 3);
+            assert!(log[0].prompt.contains("Prior Conversation (Briefing)"));
+            assert!(
+                !log[1].prompt.contains("Prior Conversation (Briefing)"),
+                "a resumed claude session already has the briefing: {:?}",
+                log[1].prompt
+            );
+            assert!(
+                log[2].prompt.contains("Prior Conversation (Briefing)"),
+                "session_id was reset (reconnect / phase switch) so claude starts a \
+                 fresh session with no memory — the briefing MUST be re-sent: {:?}",
+                log[2].prompt
+            );
+        });
+    }
+
+    #[test]
+    fn claude_cli_does_not_duplicate_ref_context_into_the_prompt_after_a_reset() {
+        with_test_home(|| {
+            let mut core = briefed_core();
+            core.session.add_message(Phase::Spec, "user", "first question");
+            core.session.add_message(Phase::Spec, "assistant", "some reply");
+            // session_id stays None (fresh claude session after reconnect).
+
+            core.send_spec_prompt("next question", Vec::new());
+
+            let log = captured(&core);
+            // `ref_context` is passed to `send_phase_prompt` separately and
+            // lands in the SYSTEM prompt; the user prompt must never also
+            // carry a "[Reference context]" block on a fresh claude session.
+            assert!(
+                !log[0].prompt.contains("[Reference context]"),
+                "ref context must not be duplicated into the user prompt: {:?}",
+                log[0].prompt
+            );
+        });
+    }
+
+    #[test]
+    fn openai_engine_briefing_gating_is_history_based() {
+        with_test_home(|| {
+            let mut core = briefed_core();
+            core.claude.engine = claude_bridge::EngineKind::OpenAiCompat {
+                endpoint: crate::engine_config::EndpointConfig {
+                    name: "local".to_string(),
+                    kind: crate::engine_config::EndpointKind::OpenAi,
+                    base_url: "http://127.0.0.1:1/v1".to_string(),
+                    api_key: None,
+                },
+                model: "gpt-oss".to_string(),
+            };
+            // The OpenAI-compat engine never sets claude.session_id, so a
+            // session_id check could never distinguish first from Nth turn.
+            assert!(core.claude.session_id.is_none());
+
+            core.send_spec_prompt("first question", Vec::new());
+            core.session.add_message(Phase::Spec, "user", "first question");
+            core.session.add_message(Phase::Spec, "assistant", "some reply");
+
+            core.send_spec_prompt("second question", Vec::new());
+
+            let log = captured(&core);
+            assert_eq!(log.len(), 2);
+            assert!(
+                log[0].prompt.contains("Prior Conversation (Briefing)"),
+                "empty history ⇒ the model has never seen the briefing: {:?}",
+                log[0].prompt
+            );
+            assert!(
+                !log[1].prompt.contains("Prior Conversation (Briefing)"),
+                "the reconstructed history already carries the prior turns, so the \
+                 briefing block must not be re-prepended every message: {:?}",
+                log[1].prompt
+            );
+        });
     }
 
     #[test]

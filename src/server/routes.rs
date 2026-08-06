@@ -20,6 +20,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/projects/{id}/open-folder", post(open_folder))
         .route("/api/projects/{id}/baseline", post(set_baseline))
         .route("/api/refs", get(list_refs))
+        .route("/api/engines", get(list_engines))
         .with_state(state.clone())
         // Task 2.2: WebSocket session channel, defined in `server::ws`.
         .merge(crate::server::ws::router(state.clone()))
@@ -163,6 +164,103 @@ fn is_valid_export_file_name(name: &str) -> bool {
         return false;
     }
     name.ends_with(".stl") || name.ends_with(".step")
+}
+
+/// `GET /api/engines` — always HTTP 200. Element 0 is always the built-in
+/// Claude CLI engine (`available` reflects `claude::check_claude()`); one
+/// element follows per configured `engines.toml` endpoint, with best-effort
+/// model discovery (2s timeout) — any failure yields `models: null` rather
+/// than an error response.
+async fn list_engines(State(_state): State<SharedState>) -> Response {
+    // `claude::check_claude()` spawns `claude --version` synchronously (no
+    // timeout), and model discovery below does blocking network I/O per
+    // configured endpoint — both would otherwise stall a tokio worker thread
+    // for however long a slow/black-holed endpoint takes to time out. Run
+    // the whole body on the blocking pool instead.
+    let out = tokio::task::spawn_blocking(list_engines_blocking)
+        .await
+        .unwrap_or_else(|_| {
+            vec![json!({
+                "id": "claude",
+                "name": "Claude CLI",
+                "available": false,
+                "models": Value::Null,
+            })]
+        });
+
+    Json(out).into_response()
+}
+
+fn list_engines_blocking() -> Vec<Value> {
+    let mut out = vec![json!({
+        "id": "claude",
+        "name": "Claude CLI",
+        "available": crate::claude::check_claude().is_ok(),
+        "models": Value::Null,
+    })];
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(2)))
+        .build()
+        .into();
+
+    for endpoint in crate::engine_config::load_endpoints() {
+        let models = discover_models(&agent, &endpoint);
+        out.push(json!({
+            "id": endpoint.name,
+            "name": endpoint.name,
+            "available": true,
+            "models": models,
+        }));
+    }
+
+    out
+}
+
+/// Best-effort model discovery for one endpoint. `Ollama` queries the
+/// native `GET /api/tags` (base_url minus a trailing `/v1`); `OpenAi`
+/// queries `GET /models`. Any failure (connect, non-2xx, parse) yields
+/// `Value::Null` rather than propagating an error.
+///
+/// A trailing `/` in `base_url` is legal in `engines.toml`, so it is trimmed
+/// before composing either URL (and before the `/v1` suffix check) — otherwise
+/// `http://host/v1/` would yield `http://host/v1//models`.
+fn discover_models(agent: &ureq::Agent, endpoint: &crate::engine_config::EndpointConfig) -> Value {
+    use crate::engine_config::EndpointKind;
+    let base = endpoint.base_url.trim_end_matches('/');
+    let (url, names_path): (String, &[&str]) = match endpoint.kind {
+        EndpointKind::Ollama => {
+            let root = base.strip_suffix("/v1").unwrap_or(base).trim_end_matches('/');
+            (format!("{root}/api/tags"), &["models", "name"])
+        }
+        EndpointKind::OpenAi => (format!("{base}/models"), &["data", "id"]),
+    };
+
+    let mut req = agent.get(&url);
+    if let Some(key) = &endpoint.api_key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+    let mut resp = match req.call() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Value::Null,
+    };
+    let body: Value = match resp.body_mut().read_json() {
+        Ok(v) => v,
+        Err(_) => return Value::Null,
+    };
+
+    let [list_key, name_key] = names_path else { return Value::Null };
+    match body.get(*list_key).and_then(|v| v.as_array()) {
+        Some(items) => {
+            let names: Vec<Value> = items
+                .iter()
+                .filter_map(|item| item.get(*name_key).and_then(|n| n.as_str()))
+                .map(|s| Value::String(s.to_string()))
+                .collect();
+            Value::Array(names)
+        }
+        None => Value::Null,
+    }
 }
 
 async fn create_project(

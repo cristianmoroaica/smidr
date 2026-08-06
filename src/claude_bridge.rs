@@ -1,9 +1,22 @@
 use crate::claude;
 use crate::core::BackgroundResult;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+
+/// Which backend `send_phase_prompt` dispatches a turn to.
+#[derive(Clone)]
+pub enum EngineKind {
+    /// The existing `claude` CLI subprocess path, unchanged.
+    ClaudeCli,
+    /// An OpenAI-compatible local endpoint, driven by the Rust agent loop in
+    /// `src/openai_engine.rs`.
+    OpenAiCompat {
+        endpoint: crate::engine_config::EndpointConfig,
+        model: String,
+    },
+}
 
 /// Whether a background task is running.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +86,13 @@ pub struct ClaudeBridge {
     pub busy: BusyState,
     /// Dispatch backend for `send_phase_prompt` / `send_raw_prompt`.
     pub dispatch: Dispatch,
+    /// Which engine `send_phase_prompt` dispatches to. Defaults to
+    /// `ClaudeCli`; changed via `AppCore::set_engine`.
+    pub engine: EngineKind,
+    /// Cooperative cancellation flag for the OpenAI-compat engine loop,
+    /// checked between SSE chunks and before each tool call. The Claude CLI
+    /// path keeps using SIGTERM via `bg_pid`; `cancel()` sets both.
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl ClaudeBridge {
@@ -99,6 +119,8 @@ impl ClaudeBridge {
             streaming_text: String::new(),
             busy: BusyState::Idle,
             dispatch: Dispatch::Subprocess,
+            engine: EngineKind::ClaudeCli,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -136,7 +158,9 @@ impl ClaudeBridge {
         self.bg_rx.try_recv().ok()
     }
 
-    /// Send SIGTERM to the background Claude subprocess (if any).
+    /// Send SIGTERM to the background Claude subprocess (if any), and set
+    /// the cooperative cancellation flag the OpenAI-compat engine loop
+    /// checks between SSE chunks and before each tool call.
     pub fn cancel(&self) {
         let pid = self.bg_pid.load(Ordering::SeqCst);
         if pid != 0 {
@@ -145,6 +169,7 @@ impl ClaudeBridge {
                 libc::kill(pid as i32, libc::SIGTERM);
             }
         }
+        self.cancel_flag.store(true, Ordering::SeqCst);
     }
 
     /// Spawn a background thread that calls `claude::send_with_phase_prompt`
@@ -153,24 +178,20 @@ impl ClaudeBridge {
     /// This replaces the duplicated thread-spawn pattern across all send methods.
     /// When `mcp_config` is provided, MCP tool flags are passed to the CLI and
     /// tool_use content blocks are forwarded via `tool_tx`.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_phase_prompt(
         &mut self,
         phase_name: &str,
         prompt: &str,
         images: &[PathBuf],
         ref_context: Option<&str>,
+        history: &[(String, String)],
+        session_dir: Option<PathBuf>,
         mcp_config: Option<PathBuf>,
     ) {
         self.busy = BusyState::Thinking;
         self.streaming_text.clear();
 
-        let model = self.model.clone();
-        let session_id = self.session_id.clone();
-        let tx = self.bg_tx.clone();
-        let stream_tx = self.stream_tx.clone();
-        let tool_tx = self.tool_tx.clone();
-        let progress_tx = self.progress_tx.clone();
-        let bg_pid = Arc::clone(&self.bg_pid);
         let phase_name = phase_name.to_string();
         let prompt = prompt.to_string();
         let images = images.to_vec();
@@ -188,39 +209,274 @@ impl ClaudeBridge {
             return;
         }
 
-        std::thread::spawn(move || {
-            let result = claude::send_with_phase_prompt(
-                &model,
-                &phase_name,
-                session_id.as_deref(),
-                &prompt,
-                &images,
-                Some(&stream_tx),
-                Some(&bg_pid),
-                ref_context.as_deref(),
-                if has_mcp { Some(&tool_tx) } else { None },
-                mcp_config.as_deref(),
-                has_mcp,
-                Some(&progress_tx),
-            );
-            bg_pid.store(0, Ordering::SeqCst);
-            match result {
-                Ok((response, new_sid)) => {
-                    let _ = tx.send(BackgroundResult::ClaudeResponse {
-                        result: Ok(response),
-                        session_id: new_sid.or(session_id),
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(BackgroundResult::ClaudeResponse {
-                        result: Err(e),
+        match &self.engine {
+            EngineKind::ClaudeCli => {
+                let model = self.model.clone();
+                let session_id = self.session_id.clone();
+                let tx = self.bg_tx.clone();
+                let stream_tx = self.stream_tx.clone();
+                let tool_tx = self.tool_tx.clone();
+                let progress_tx = self.progress_tx.clone();
+                let bg_pid = Arc::clone(&self.bg_pid);
+
+                std::thread::spawn(move || {
+                    let result = claude::send_with_phase_prompt(
+                        &model,
+                        &phase_name,
+                        session_id.as_deref(),
+                        &prompt,
+                        &images,
+                        Some(&stream_tx),
+                        Some(&bg_pid),
+                        ref_context.as_deref(),
+                        if has_mcp { Some(&tool_tx) } else { None },
+                        mcp_config.as_deref(),
+                        has_mcp,
+                        Some(&progress_tx),
+                    );
+                    bg_pid.store(0, Ordering::SeqCst);
+                    match result {
+                        Ok((response, new_sid)) => {
+                            let _ = tx.send(BackgroundResult::ClaudeResponse {
+                                result: Ok(response),
+                                session_id: new_sid.or(session_id),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BackgroundResult::ClaudeResponse {
+                                result: Err(e),
+                                session_id: None,
+                            });
+                        }
+                    }
+                });
+            }
+            EngineKind::OpenAiCompat { endpoint, model } => {
+                if !images.is_empty() {
+                    let _ = self.bg_tx.send(BackgroundResult::ClaudeResponse {
+                        result: Err("images are not supported on local engines (v1)".to_string()),
                         session_id: None,
                     });
+                    return;
                 }
+
+                self.cancel_flag.store(false, Ordering::SeqCst);
+
+                let mut system_prompt = match crate::prompt_builder::load_phase_system_prompt(&phase_name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = self.bg_tx.send(BackgroundResult::ClaudeResponse {
+                            result: Err(e),
+                            session_id: None,
+                        });
+                        return;
+                    }
+                };
+                if matches!(
+                    phase_name.as_str(),
+                    "build" | "component" | "assembly" | "refinement" | "refine" | "lead"
+                ) {
+                    system_prompt.push_str(&crate::prompt_builder::load_engineering_knowledge());
+                }
+                if let Some(ctx) = &ref_context {
+                    system_prompt.push_str("\n\n");
+                    system_prompt.push_str(ctx);
+                }
+
+                let turn = crate::openai_engine::OpenAiTurn {
+                    endpoint: endpoint.clone(),
+                    model: model.clone(),
+                    phase_name: phase_name.clone(),
+                    system_prompt,
+                    history: history.to_vec(),
+                    prompt,
+                    session_dir,
+                    cancel: Arc::clone(&self.cancel_flag),
+                };
+
+                let tx = self.bg_tx.clone();
+                let stream_tx = self.stream_tx.clone();
+                let tool_tx = self.tool_tx.clone();
+                let progress_tx = self.progress_tx.clone();
+
+                std::thread::spawn(move || {
+                    let result = crate::openai_engine::run_turn(turn, &stream_tx, &tool_tx, &progress_tx);
+                    let _ = tx.send(BackgroundResult::ClaudeResponse {
+                        result,
+                        session_id: None,
+                    });
+                });
             }
-        });
+        }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::BackgroundResult;
+    use crate::engine_config::{EndpointConfig, EndpointKind};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    fn fake_endpoint(base_url: &str) -> EndpointConfig {
+        EndpointConfig {
+            name: "fake".to_string(),
+            kind: EndpointKind::OpenAi,
+            base_url: base_url.to_string(),
+            api_key: None,
+        }
+    }
+
+    /// Poll `try_recv_result` until it yields something or `timeout` elapses.
+    fn recv_result_within(bridge: &ClaudeBridge, timeout: Duration) -> Option<BackgroundResult> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(r) = bridge.try_recv_result() {
+                return Some(r);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A bound-then-dropped listener frees the port with nobody listening,
+    /// guaranteeing "connection refused" rather than a flaky "might still be
+    /// in TIME_WAIT" port reuse — mirrors the pattern in tests/api_engines.rs.
+    fn dead_base_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        format!("http://{addr}/v1")
+    }
+
+    #[test]
+    fn capture_dispatch_ignores_engine_and_history_and_does_not_touch_bg_channel() {
+        let mut bridge = ClaudeBridge::new(None);
+        bridge.dispatch = Dispatch::Capture(Vec::new());
+        bridge.engine = EngineKind::OpenAiCompat {
+            endpoint: fake_endpoint("http://127.0.0.1:1/v1"),
+            model: "test-model".to_string(),
+        };
+        let history = vec![("user".to_string(), "earlier turn".to_string())];
+
+        bridge.send_phase_prompt("spec", "hello", &[], None, &history, None, None);
+
+        match &bridge.dispatch {
+            Dispatch::Capture(log) => {
+                assert_eq!(log.len(), 1);
+                assert_eq!(log[0].phase_name.as_deref(), Some("spec"));
+                assert_eq!(log[0].prompt, "hello");
+                assert!(log[0].images.is_empty());
+                assert_eq!(log[0].ref_context, None);
+                assert!(!log[0].has_mcp);
+            }
+            Dispatch::Subprocess => panic!("dispatch should still be Capture"),
+        }
+
+        // Capture returns before ever touching the OpenAI engine or spawning
+        // a thread — nothing should show up on the background-result channel.
+        assert!(recv_result_within(&bridge, Duration::from_millis(200)).is_none());
+    }
+
+    #[test]
+    fn openai_compat_dispatch_with_dead_endpoint_sends_err_promptly() {
+        let mut bridge = ClaudeBridge::new(None);
+        bridge.engine = EngineKind::OpenAiCompat {
+            endpoint: fake_endpoint(&dead_base_url()),
+            model: "test-model".to_string(),
+        };
+
+        bridge.send_phase_prompt("spec", "hello", &[], None, &[], None, None);
+
+        let result = recv_result_within(&bridge, Duration::from_secs(10))
+            .expect("dead endpoint should produce a prompt Err, not hang");
+        match result {
+            BackgroundResult::ClaudeResponse { result, session_id } => {
+                assert!(result.is_err(), "expected Err from a dead endpoint, got {result:?}");
+                assert!(session_id.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn openai_compat_dispatch_rejects_images() {
+        let mut bridge = ClaudeBridge::new(None);
+        bridge.engine = EngineKind::OpenAiCompat {
+            endpoint: fake_endpoint("http://127.0.0.1:1/v1"),
+            model: "test-model".to_string(),
+        };
+
+        bridge.send_phase_prompt(
+            "spec",
+            "hello",
+            &[PathBuf::from("/tmp/does-not-matter.png")],
+            None,
+            &[],
+            None,
+            None,
+        );
+
+        let result = recv_result_within(&bridge, Duration::from_secs(2))
+            .expect("images rejection should be synchronous, not require a thread");
+        match result {
+            BackgroundResult::ClaudeResponse { result, session_id } => {
+                assert_eq!(result, Err("images are not supported on local engines (v1)".to_string()));
+                assert!(session_id.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn openai_compat_dispatch_sends_err_on_prompt_load_failure() {
+        let mut bridge = ClaudeBridge::new(None);
+        bridge.engine = EngineKind::OpenAiCompat {
+            endpoint: fake_endpoint("http://127.0.0.1:1/v1"),
+            model: "test-model".to_string(),
+        };
+
+        // No embedded prompt named "nonexistent_phase.md" exists, so
+        // `prompt_builder::load_phase_system_prompt` errors before any
+        // thread is spawned or network call attempted.
+        bridge.send_phase_prompt("nonexistent_phase", "hello", &[], None, &[], None, None);
+
+        let result = recv_result_within(&bridge, Duration::from_secs(2))
+            .expect("a prompt-load failure should send an Err synchronously");
+        match result {
+            BackgroundResult::ClaudeResponse { result, session_id } => {
+                assert!(result.is_err(), "expected Err from a missing phase prompt, got {result:?}");
+                assert!(session_id.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_sets_the_cooperative_cancel_flag() {
+        let bridge = ClaudeBridge::new(None);
+        assert!(!bridge.cancel_flag.load(Ordering::SeqCst));
+        bridge.cancel();
+        assert!(bridge.cancel_flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn openai_compat_dispatch_resets_cancel_flag_at_the_start_of_a_new_turn() {
+        let mut bridge = ClaudeBridge::new(None);
+        bridge.cancel_flag.store(true, Ordering::SeqCst);
+        bridge.engine = EngineKind::OpenAiCompat {
+            endpoint: fake_endpoint(&dead_base_url()),
+            model: "test-model".to_string(),
+        };
+
+        bridge.send_phase_prompt("spec", "hello", &[], None, &[], None, None);
+
+        assert!(!bridge.cancel_flag.load(Ordering::SeqCst));
+        // Drain the background result so the spawned thread doesn't outlive
+        // useful assertions/log noise in the test run.
+        let _ = recv_result_within(&bridge, Duration::from_secs(10));
+    }
 }
 
 /// Generate an MCP config JSON file for the given phase and return its path.
@@ -253,7 +509,7 @@ pub fn generate_mcp_config(phase_name: &str, session_dir: Option<&Path>) -> Resu
 
 /// Locate the MCP server script (mcp/server.py).
 /// Searches cwd, binary dir, and walks up from cwd.
-fn find_mcp_server() -> Result<PathBuf, String> {
+pub(crate) fn find_mcp_server() -> Result<PathBuf, String> {
     let candidates = [
         std::env::current_dir().ok().map(|d| d.join("mcp/server.py")),
         std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mcp/server.py"))),
@@ -282,7 +538,7 @@ fn find_mcp_server() -> Result<PathBuf, String> {
 /// Find the Python interpreter that has CadQuery+OCP installed.
 /// Looks for .venv-cadquery/bin/python3 relative to the project root
 /// (same directory tree as mcp/server.py). Falls back to "python3".
-fn find_cadquery_python(server_path: &Path) -> String {
+pub(crate) fn find_cadquery_python(server_path: &Path) -> String {
     // server_path is like /path/to/project/mcp/server.py
     // project root is the parent of mcp/
     if let Some(project_root) = server_path.parent().and_then(|p| p.parent()) {

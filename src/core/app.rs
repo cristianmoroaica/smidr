@@ -94,6 +94,12 @@ pub struct AppCore {
     /// user prompt, a phase switch, a denial, or a wholesale conversation
     /// reset.
     pub(crate) pending_phase_switch: Option<(String, String)>,
+
+    /// The currently-selected engine id: `"claude"` or `"<endpoint>:<model>"`.
+    /// Mirrors `claude.engine` (which holds the resolved `EngineKind`); kept
+    /// separately because `EngineKind` doesn't round-trip back to a string
+    /// cheaply and the id is what gets persisted/snapshotted verbatim.
+    pub(crate) engine_id: String,
 }
 
 impl AppCore {
@@ -153,6 +159,7 @@ impl AppCore {
             phase_gate: false,
             pending_question: None,
             pending_phase_switch: None,
+            engine_id: "claude".to_string(),
         })
     }
 
@@ -371,6 +378,61 @@ impl AppCore {
 
     pub fn cancel(&self) {
         self.claude.cancel();
+    }
+
+    /// The currently-selected engine id: `"claude"` or `"<endpoint>:<model>"`.
+    pub fn engine_id(&self) -> String {
+        self.engine_id.clone()
+    }
+
+    /// Select the engine for future turns in this project. `"claude"`
+    /// resets to the built-in Claude CLI engine; any other value is split on
+    /// the first `:` into (endpoint name, model) and resolved against
+    /// `engine_config::load_endpoints()`. An unknown endpoint name is an
+    /// error and leaves the current engine unchanged. On success, updates
+    /// `self.claude.engine`, `self.engine_id`, and persists the choice to
+    /// the project's `project.json` (a no-op when no project is open yet).
+    pub fn set_engine(&mut self, id: &str) -> Result<(), String> {
+        let resolved_id = self.apply_engine(id)?;
+
+        if let Some(dir) = self.project_dir() {
+            let engine = if resolved_id == "claude" { None } else { Some(resolved_id.as_str()) };
+            if let Err(e) = storage::project::set_project_engine(&dir, engine) {
+                eprintln!("Warning: failed to persist engine selection: {e}");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve `id` and apply it to `self.claude.engine` / `self.engine_id`
+    /// WITHOUT touching `project.json`. Used both by `set_engine` (which then
+    /// persists) and by `open_project` (which must not: re-writing
+    /// `project.json` on every open is a pointless write, and if the file is
+    /// unreadable `set_project_engine`'s fresh-meta fallback would clobber a
+    /// recoverable `name`/`created`/`description`). Returns the resolved id.
+    fn apply_engine(&mut self, id: &str) -> Result<String, String> {
+        let (kind, resolved_id) = if id == "claude" {
+            (crate::claude_bridge::EngineKind::ClaudeCli, "claude".to_string())
+        } else {
+            let (name, model) = crate::engine_config::split_engine_id(id)
+                .ok_or_else(|| format!("invalid engine id: {id}"))?;
+            let endpoint = crate::engine_config::find_endpoint(&name)
+                .ok_or_else(|| format!("unknown engine endpoint: {name}"))?;
+            (
+                crate::claude_bridge::EngineKind::OpenAiCompat { endpoint, model },
+                id.to_string(),
+            )
+        };
+
+        self.claude.engine = kind;
+        self.engine_id = resolved_id.clone();
+        Ok(resolved_id)
+    }
+
+    /// The current project's directory, if a project has been opened.
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.session.project_idx.and_then(|idx| self.projects.get(idx)).map(|p| p.path.clone())
     }
 
     pub fn briefing_pending(&self) -> bool {
@@ -860,6 +922,28 @@ impl AppCore {
             self.claude.session_id = None;
             self.pending_question = None;
             self.pending_phase_switch = None;
+
+            // Apply the project's persisted engine choice. An unknown
+            // endpoint (e.g. removed from engines.toml since it was
+            // selected) falls back to Claude with a warning rather than
+            // erroring — opening a project must never fail because of a
+            // stale engine reference. `apply_engine` (not `set_engine`):
+            // opening a project reads the stored choice, it must not
+            // re-write project.json.
+            match project.meta.engine.as_deref() {
+                None | Some("claude") => {
+                    self.claude.engine = crate::claude_bridge::EngineKind::ClaudeCli;
+                    self.engine_id = "claude".to_string();
+                }
+                Some(id) => match self.apply_engine(id) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Warning: project engine \"{id}\" unavailable, falling back to Claude: {e}");
+                        self.claude.engine = crate::claude_bridge::EngineKind::ClaudeCli;
+                        self.engine_id = "claude".to_string();
+                    }
+                },
+            }
 
             self.reset_conversation(Vec::new());
 
