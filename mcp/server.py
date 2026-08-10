@@ -1144,6 +1144,12 @@ def handle_tool_call(name, arguments, session_dir):
                 )
                 if isinstance(iteration_n, int):
                     build_info += f"\nIteration {iteration_n} exported (iteration_{iteration_n:03d}.glb)."
+                else:
+                    build_info += (
+                        "\nWARNING: GLB iteration export failed — the in-app viewer will NOT"
+                        " update. Check that the CadQuery venv has trimesh installed"
+                        " (pip install trimesh). Tell the user the viewer cannot show this build."
+                    )
                 build_info += "\n" + build_progress_line(label, "done")
                 return [{"type": "text", "text": build_info}]
             else:

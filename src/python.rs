@@ -61,8 +61,31 @@ impl Engine {
     }
 }
 
+/// Resolve the (program, prefix args) to spawn `python` natively.
+///
+/// On Apple Silicon a Rosetta exec-affinity flag inherited from an x86_64
+/// ancestor (ps flags 0x10000) survives arm64-only binaries and makes a
+/// universal python run its x86_64 slice, which cannot load the arm64 OCP
+/// wheels. `/usr/bin/arch -arm64` pins the slice at exec time regardless
+/// of how the app was launched.
+pub fn native_arch_command(python: &str) -> (String, Vec<String>) {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        const ARCH: &str = "/usr/bin/arch";
+        if Path::new(ARCH).exists() {
+            return (
+                ARCH.to_string(),
+                vec!["-arm64".to_string(), python.to_string()],
+            );
+        }
+    }
+    (python.to_string(), Vec::new())
+}
+
 pub fn check_python(python: &str) -> Result<(), String> {
-    let output = Command::new(python)
+    let (program, prefix) = native_arch_command(python);
+    let output = Command::new(&program)
+        .args(&prefix)
         .args(["-m", "ai3d_cad", "--version"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -87,7 +110,9 @@ pub fn check_python(python: &str) -> Result<(), String> {
 }
 
 fn run_python_subprocess(python: &str, args: &[String], timeout: Duration) -> BuildResult {
-    let mut child = match Command::new(python)
+    let (program, prefix) = native_arch_command(python);
+    let mut child = match Command::new(&program)
+        .args(&prefix)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -84,6 +84,7 @@ pub fn send_prompt(
         .arg("-p")
         .arg(&full_prompt)
         .arg("--output-format").arg("stream-json")
+        .arg("--verbose")
         .env_remove("ANTHROPIC_API_KEY")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

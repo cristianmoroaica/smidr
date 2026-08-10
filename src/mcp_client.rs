@@ -36,18 +36,21 @@ impl McpClient {
     pub fn start(phase: &str, session_dir: Option<&Path>) -> Result<Self, String> {
         let server_path = crate::claude_bridge::find_mcp_server()?;
         let python = crate::claude_bridge::find_cadquery_python(&server_path);
+        // Pin the interpreter to the native arch so an inherited Rosetta
+        // exec-affinity can't flip a universal python to x86_64.
+        let (program, mut args) = crate::python::native_arch_command(&python);
 
-        let mut args = vec![
+        args.extend([
             server_path.to_string_lossy().to_string(),
             "--phase".to_string(),
             phase.to_string(),
-        ];
+        ]);
         if let Some(dir) = session_dir {
             args.push("--session-dir".to_string());
             args.push(dir.to_string_lossy().to_string());
         }
 
-        Self::start_with_command(&python, &args)
+        Self::start_with_command(&program, &args)
     }
 
     /// Spawn `program args...` with piped stdin/stdout and inherited stderr,

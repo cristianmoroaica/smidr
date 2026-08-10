@@ -484,11 +484,14 @@ mod tests {
 pub fn generate_mcp_config(phase_name: &str, session_dir: Option<&Path>) -> Result<PathBuf, String> {
     let server_path = find_mcp_server()?;
     let python_cmd = find_cadquery_python(&server_path);
-    let mut args = vec![
+    // Pin the interpreter to the native arch so an inherited Rosetta
+    // exec-affinity can't flip a universal python to x86_64.
+    let (command, mut args) = crate::python::native_arch_command(&python_cmd);
+    args.extend([
         server_path.to_string_lossy().to_string(),
         "--phase".to_string(),
         phase_name.to_string(),
-    ];
+    ]);
     if let Some(dir) = session_dir {
         args.push("--session-dir".to_string());
         args.push(dir.to_string_lossy().to_string());
@@ -496,7 +499,7 @@ pub fn generate_mcp_config(phase_name: &str, session_dir: Option<&Path>) -> Resu
     let config = serde_json::json!({
         "mcpServers": {
             "smidr": {
-                "command": python_cmd,
+                "command": command,
                 "args": args
             }
         }
