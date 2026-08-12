@@ -90,7 +90,7 @@ jobs:
 
       - name: Verify packaged runtime again
         run: |
-          app_path="$(find desktop/dist -maxdepth 2 -type d -name '*.app' -print -quit)"
+          app_path="$(find "$PWD/desktop/dist" -maxdepth 2 -type d -name '*.app' -print -quit)"
           test -n "$app_path"
           resources="$app_path/Contents/Resources"
           SMIDR_PACKAGED_RESOURCES="$resources" npm --prefix desktop run smoke:backend
