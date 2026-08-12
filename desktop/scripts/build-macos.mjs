@@ -28,7 +28,7 @@ function findApp(root) {
   if (!existsSync(root)) return null;
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const full = path.join(root, entry.name);
-    if (entry.isDirectory() && entry.name === 'Smiðr.app') return full;
+    if (entry.isDirectory() && entry.name.endsWith('.app')) return full;
     if (entry.isDirectory()) {
       const nested = findApp(full);
       if (nested) return nested;
