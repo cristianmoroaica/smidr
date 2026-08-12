@@ -21,9 +21,9 @@ echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"hello fr
 /// a tool_result whose text contains BUILD_COMPONENT lines for two
 /// components (one done, one failed), then the usual result event.
 const FAKE_CLAUDE_BUILD_PROGRESS_SCRIPT: &str = r#"#!/bin/sh
-echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__smidr__write_file","input":{"path":"components/lid/code.py"}}]}}'
-echo '{"type":"user","session_id":"fake-1","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"File written: components/lid/code.py\nBuild successful! Dimensions: 1x2x3mm.\nBUILD_COMPONENT: lid done\nBUILD_COMPONENT: base failed"}]}]}}'
-echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"build done"}'
+printf '%s\n' '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"tool_use","name":"mcp__smidr__write_file","input":{"path":"components/lid/code.py"}}]}}'
+printf '%s\n' '{"type":"user","session_id":"fake-1","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"File written: components/lid/code.py\nBuild successful! Dimensions: 1x2x3mm.\nBUILD_COMPONENT: lid done\nBUILD_COMPONENT: base failed"}]}]}}'
+printf '%s\n' '{"type":"result","session_id":"fake-1","is_error":false,"result":"build done"}'
 "#;
 
 /// A fake `claude` script that emits a tool_use for `mcp__smidr__ask_question`

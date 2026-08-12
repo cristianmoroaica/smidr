@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "CadQuery/OpenSCAD execution engine for ai3d"
 requires-python = ">=3.10"
 dependencies = [
-    "cadquery>=2.4",
+    # CadQuery 2.8 pulls Numba/llvmlite builds that currently lack a usable
+    # Intel macOS wheel. Keep both Mac architectures on the proven 2.7 line.
+    "cadquery>=2.4,<2.8",
     "trimesh>=4.0",
     "numpy>=1.24",
 ]
