@@ -31,7 +31,11 @@ const backup = path.join(applicationsDir, `.Smiðr.previous-${process.pid}.app`)
 mkdirSync(applicationsDir, { recursive: true });
 rmSync(staging, { recursive: true, force: true });
 rmSync(backup, { recursive: true, force: true });
-cpSync(source, staging, { recursive: true, preserveTimestamps: true });
+cpSync(source, staging, {
+  recursive: true,
+  preserveTimestamps: true,
+  verbatimSymlinks: true
+});
 
 try {
   if (existsSync(target)) renameSync(target, backup);
