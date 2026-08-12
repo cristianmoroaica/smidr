@@ -17,6 +17,21 @@ echo '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"t
 echo '{"type":"result","session_id":"fake-1","is_error":false,"result":"hello from fake claude"}'
 "#;
 
+const FAKE_CLAUDE_IMAGE_SCRIPT: &str = r#"#!/bin/sh
+prompt=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-p" ]; then prompt="$arg"; fi
+  prev="$arg"
+done
+case "$prompt" in
+  *"Image: "*"context.png"*) result="image received" ;;
+  *) result="image missing" ;;
+esac
+printf '{"type":"assistant","session_id":"fake-1","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$result"
+printf '{"type":"result","session_id":"fake-1","is_error":false,"result":"%s"}\n' "$result"
+"#;
+
 /// A fake `claude` script that emits a tool_use, then a `user` event carrying
 /// a tool_result whose text contains BUILD_COMPONENT lines for two
 /// components (one done, one failed), then the usual result event.
@@ -128,6 +143,18 @@ fn spawn_with_fake_claude() -> (common::Server, tempfile::TempDir) {
 fn create_project(base: &str, name: &str) -> String {
     let resp = ureq::post(&format!("{base}/api/projects")).send_json(json!({"name": name}));
     let mut resp = resp.expect("create project should succeed");
+    let body: Value = resp.body_mut().read_json().unwrap();
+    body["id"].as_str().unwrap().to_string()
+}
+
+fn upload_png(base: &str, project_id: &str) -> String {
+    let bytes = b"\x89PNG\r\n\x1a\ncontext" as &[u8];
+    let mut resp = ureq::post(&format!(
+        "{base}/api/projects/{project_id}/attachments?filename=context.png"
+    ))
+    .header("content-type", "image/png")
+    .send(bytes)
+    .expect("image upload should succeed");
     let body: Value = resp.body_mut().read_json().unwrap();
     body["id"].as_str().unwrap().to_string()
 }
@@ -255,6 +282,35 @@ fn prompt_streams_deltas_from_fake_claude_and_finalizes_into_snapshot() {
             }
             Some("tool_call") => {} // fake claude emits none, but tolerate it
             other => panic!("unexpected message type: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn uploaded_image_is_resolved_and_reaches_the_agent_prompt() {
+    let (server, _bin_dir) = spawn_with_fake_claude_script(FAKE_CLAUDE_IMAGE_SCRIPT);
+    let id = create_project(&server.base, "widget");
+    let attachment_id = upload_png(&server.base, &id);
+
+    let mut ws = connect(&server, &id);
+    let _snapshot = read_json(&mut ws);
+    send_json(&mut ws, json!({
+        "type": "prompt",
+        "text": "match this reference",
+        "part_refs": [],
+        "lib_refs": [],
+        "attachment_ids": [attachment_id],
+    }));
+
+    loop {
+        let msg = read_json(&mut ws);
+        if msg["type"] == "snapshot" {
+            let conversation = msg["conversation"].as_array().unwrap();
+            assert!(
+                conversation.iter().any(|entry| entry["content"] == "image received"),
+                "agent prompt did not contain the staged image path: {conversation:?}"
+            );
+            break;
         }
     }
 }

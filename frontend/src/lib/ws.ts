@@ -3,7 +3,13 @@
 // sync with src/server/ws.rs exactly.
 
 export type ClientMsg =
-  | { type: 'prompt'; text: string; part_refs: string[]; lib_refs: string[] }
+  | {
+      type: 'prompt';
+      text: string;
+      part_refs: string[];
+      lib_refs: string[];
+      attachment_ids: string[];
+    }
   | { type: 'approve_phase' }
   | { type: 'advance' }
   | { type: 'go_back'; target: 'spec' | 'build' }

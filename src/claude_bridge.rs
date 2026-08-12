@@ -252,14 +252,6 @@ impl ClaudeBridge {
                 });
             }
             EngineKind::OpenAiCompat { endpoint, model } => {
-                if !images.is_empty() {
-                    let _ = self.bg_tx.send(BackgroundResult::ClaudeResponse {
-                        result: Err("images are not supported on local engines (v1)".to_string()),
-                        session_id: None,
-                    });
-                    return;
-                }
-
                 self.cancel_flag.store(false, Ordering::SeqCst);
 
                 let mut system_prompt = match crate::prompt_builder::load_phase_system_prompt(&phase_name) {
@@ -290,6 +282,7 @@ impl ClaudeBridge {
                     system_prompt,
                     history: history.to_vec(),
                     prompt,
+                    images,
                     session_dir,
                     cancel: Arc::clone(&self.cancel_flag),
                 };
@@ -403,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_compat_dispatch_rejects_images() {
+    fn openai_compat_dispatch_accepts_images_and_reports_unreadable_files() {
         let mut bridge = ClaudeBridge::new(None);
         bridge.engine = EngineKind::OpenAiCompat {
             endpoint: fake_endpoint("http://127.0.0.1:1/v1"),
@@ -420,11 +413,12 @@ mod tests {
             None,
         );
 
-        let result = recv_result_within(&bridge, Duration::from_secs(2))
-            .expect("images rejection should be synchronous, not require a thread");
+        let result = recv_result_within(&bridge, Duration::from_secs(10))
+            .expect("unreadable image should produce an error, not hang");
         match result {
             BackgroundResult::ClaudeResponse { result, session_id } => {
-                assert_eq!(result, Err("images are not supported on local engines (v1)".to_string()));
+                let error = result.expect_err("missing image should fail before the request");
+                assert!(error.contains("failed to read image"), "unexpected error: {error}");
                 assert!(session_id.is_none());
             }
         }

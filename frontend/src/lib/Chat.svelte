@@ -5,6 +5,7 @@
 
   type Message = { role: string; content: string };
   type ToolCall = { name: string; detail: string };
+  type PendingImage = { key: string; file: File; previewUrl: string };
 
   let {
     messages,
@@ -27,7 +28,7 @@
     selectedParts: string[];
     libRefs: string[];
     pendingQuestion: { question: string; options: string[] } | null;
-    onSend: (text: string) => void;
+    onSend: (text: string, images?: File[]) => boolean | Promise<boolean>;
     onCancel: () => void;
     onRemovePart: (name: string) => void;
     onAddRef: (slug: string) => void;
@@ -39,8 +40,16 @@
   let textareaEl: HTMLTextAreaElement | undefined = $state();
   let refQuery = $state<string | null>(null);
   let refPicker: RefPicker | undefined = $state();
+  let fileInputEl: HTMLInputElement | undefined = $state();
+  let pendingImages = $state<PendingImage[]>([]);
+  let attachmentError = $state<string | null>(null);
+  let draggingImages = $state(false);
+  let submitting = $state(false);
 
   const REF_TRIGGER_RE = /(?:^|\s)\/ref\s*([\w-]*)$/;
+  const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  const MAX_IMAGES = 5;
 
   function updateRefTrigger() {
     const caret = textareaEl?.selectionStart ?? draft.length;
@@ -90,11 +99,24 @@
     return -1;
   });
 
-  function submit() {
+  async function submit() {
     const text = draft.trim();
-    if (!text) return;
-    onSend(text);
-    draft = '';
+    if ((!text && pendingImages.length === 0) || submitting) return;
+    submitting = true;
+    try {
+      const sent = await onSend(
+        text,
+        pendingImages.map((image) => image.file)
+      );
+      if (sent !== false) {
+        draft = '';
+        for (const image of pendingImages) URL.revokeObjectURL(image.previewUrl);
+        pendingImages = [];
+        attachmentError = null;
+      }
+    } finally {
+      submitting = false;
+    }
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -113,6 +135,62 @@
 
   function dismissRefPicker() {
     refQuery = null;
+  }
+
+  function addImages(files: Iterable<File>) {
+    attachmentError = null;
+    const additions: PendingImage[] = [];
+    for (const file of files) {
+      const hasSupportedExtension = /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+      if (!ACCEPTED_IMAGE_TYPES.has(file.type) && !hasSupportedExtension) {
+        attachmentError = 'Choose PNG, JPEG, WebP, or GIF images.';
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        attachmentError = `${file.name} is larger than 10 MB.`;
+        continue;
+      }
+      const duplicate = [...pendingImages, ...additions].some(
+        (image) =>
+          image.file.name === file.name &&
+          image.file.size === file.size &&
+          image.file.lastModified === file.lastModified
+      );
+      if (duplicate) continue;
+      if (pendingImages.length + additions.length >= MAX_IMAGES) {
+        attachmentError = `You can attach up to ${MAX_IMAGES} images.`;
+        break;
+      }
+      additions.push({
+        key: `${file.name}-${file.size}-${file.lastModified}`,
+        file,
+        previewUrl: URL.createObjectURL(file)
+      });
+    }
+    if (additions.length > 0) pendingImages = [...pendingImages, ...additions];
+    if (fileInputEl) fileInputEl.value = '';
+  }
+
+  function removeImage(key: string) {
+    const image = pendingImages.find((candidate) => candidate.key === key);
+    if (image) URL.revokeObjectURL(image.previewUrl);
+    pendingImages = pendingImages.filter((candidate) => candidate.key !== key);
+    attachmentError = null;
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const images = Array.from(e.clipboardData?.files ?? []).filter((file) =>
+      file.type.startsWith('image/')
+    );
+    if (images.length === 0) return;
+    e.preventDefault();
+    addImages(images);
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    draggingImages = false;
+    addImages(Array.from(e.dataTransfer?.files ?? []));
   }
 </script>
 
@@ -164,7 +242,40 @@
     {/if}
   </div>
 
-  <div class="composer-wrap">
+  <div
+    class="composer-wrap"
+    class:dragging={draggingImages}
+    role="group"
+    aria-label="Message composer"
+    ondragenter={(e) => {
+      e.preventDefault();
+      draggingImages = true;
+    }}
+    ondragover={(e) => e.preventDefault()}
+    ondragleave={(e) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) draggingImages = false;
+    }}
+    ondrop={onDrop}
+  >
+    {#if pendingImages.length > 0}
+      <div class="image-previews" aria-label="Attached images">
+        {#each pendingImages as image (image.key)}
+          <div class="image-preview">
+            <img src={image.previewUrl} alt="Preview of {image.file.name}" />
+            <span title={image.file.name}>{image.file.name}</span>
+            <button
+              class="image-remove"
+              type="button"
+              onclick={() => removeImage(image.key)}
+              aria-label="Remove {image.file.name}"
+            >×</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if attachmentError}
+      <div class="attachment-error" role="alert">{attachmentError}</div>
+    {/if}
     {#if selectedParts.length > 0 || libRefs.length > 0}
       <div class="chips">
         {#each selectedParts as name}
@@ -205,15 +316,38 @@
           onkeydown={onKeydown}
           oninput={onDraftInput}
           onclick={updateRefTrigger}
+          onpaste={onPaste}
           placeholder="Type a message... (Enter to send, Shift+Enter for newline, /ref to attach a reference)"
           rows="3"
         ></textarea>
       </div>
       <div class="composer-actions">
+        <input
+          bind:this={fileInputEl}
+          class="file-input"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          onchange={(e) => addImages(e.currentTarget.files ?? [])}
+        />
+        <button
+          class="attach"
+          type="button"
+          onclick={() => fileInputEl?.click()}
+          disabled={submitting || pendingImages.length >= MAX_IMAGES}
+          aria-label="Attach images"
+          title="Attach images"
+        >
+          <span aria-hidden="true">＋</span> Image
+        </button>
         {#if busy}
           <button class="cancel" onclick={onCancel}>Cancel</button>
         {/if}
-        <button class="send" onclick={submit} disabled={!draft.trim()}>Send</button>
+        <button
+          class="send"
+          onclick={submit}
+          disabled={submitting || (!draft.trim() && pendingImages.length === 0)}
+        >{submitting ? 'Uploading…' : 'Send'}</button>
       </div>
     </div>
   </div>
@@ -436,6 +570,69 @@
   .composer-wrap {
     border-top: 1px solid var(--border, #2e333d);
     background: var(--bg-surface, #1a1d24);
+    transition: border-color 120ms, background 120ms;
+  }
+
+  .composer-wrap.dragging {
+    border-color: var(--accent, #4f8ff7);
+    background: var(--accent-soft, rgba(79, 143, 247, 0.14));
+  }
+
+  .image-previews {
+    display: flex;
+    gap: 0.55rem;
+    padding: 0.65rem 0.75rem 0;
+    overflow-x: auto;
+  }
+
+  .image-preview {
+    position: relative;
+    flex: 0 0 6rem;
+    min-width: 0;
+    padding: 0.25rem;
+    border: 1px solid var(--border-strong, #3d434f);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--bg-inset, #0d0f13);
+  }
+
+  .image-preview img {
+    display: block;
+    width: 100%;
+    height: 3.75rem;
+    object-fit: cover;
+    border-radius: 4px;
+  }
+
+  .image-preview span {
+    display: block;
+    margin-top: 0.25rem;
+    overflow: hidden;
+    color: var(--text-secondary, #9aa3b2);
+    font-size: 0.68rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  button.image-remove {
+    position: absolute;
+    top: -0.4rem;
+    right: -0.4rem;
+    display: grid;
+    width: 1.35rem;
+    height: 1.35rem;
+    padding: 0;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--bg-raised, #22262f);
+    color: var(--text, #e6e9ef);
+    line-height: 1;
+  }
+
+  .attachment-error {
+    padding: 0.4rem 0.75rem 0;
+    color: var(--danger, #f05252);
+    font-size: 0.75rem;
   }
 
   .chips {
@@ -537,6 +734,10 @@
     gap: 0.4rem;
   }
 
+  .file-input {
+    display: none;
+  }
+
   button {
     font: inherit;
     padding: 0.5rem 0.9rem;
@@ -568,6 +769,17 @@
 
   button.send:hover:not(:disabled) {
     background: var(--accent-hover, #6ba1f9);
+  }
+
+  button.attach {
+    padding-inline: 0.65rem;
+    color: var(--text-secondary, #9aa3b2);
+    white-space: nowrap;
+  }
+
+  button.attach:hover:not(:disabled) {
+    border-color: var(--accent-border, rgba(79, 143, 247, 0.45));
+    color: var(--accent, #4f8ff7);
   }
 
   button.cancel {

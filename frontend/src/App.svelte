@@ -178,15 +178,63 @@
     }
   }
 
-  function onSend(text: string) {
-    if (!client) return;
+  const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif'
+  };
+
+  async function uploadImage(file: File): Promise<string> {
+    if (!projectId) throw new Error('No project is open');
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const contentType = IMAGE_MIME_BY_EXTENSION[ext] ?? file.type;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/attachments?filename=${encodeURIComponent(file.name)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body: file
+    });
+    if (!res.ok) {
+      let message = `Could not upload ${file.name}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) message = body.error;
+      } catch {
+        // Keep the concise fallback when the response is not JSON.
+      }
+      throw new Error(message);
+    }
+    const body = (await res.json()) as { id: string };
+    return body.id;
+  }
+
+  async function onSend(text: string, images: File[] = []): Promise<boolean> {
+    if (!client || (!text.trim() && images.length === 0)) return false;
+    let attachmentIds: string[];
+    try {
+      attachmentIds = await Promise.all(images.map(uploadImage));
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+
+    const visibleText = text.trim() || 'Use the attached image(s) as visual context.';
     busy = true;
     pendingQuestion = null;
     pendingPhaseSwitch = null;
-    conversation = [...conversation, { role: 'user', content: text }];
-    client.send({ type: 'prompt', text, part_refs: [...selectedParts], lib_refs: [...libRefs] });
+    conversation = [...conversation, { role: 'user', content: visibleText }];
+    client.send({
+      type: 'prompt',
+      text,
+      part_refs: [...selectedParts],
+      lib_refs: [...libRefs],
+      attachment_ids: attachmentIds
+    });
     selectedParts = [];
     libRefs = [];
+    return true;
   }
 
   function onPartSelected(name: string) {

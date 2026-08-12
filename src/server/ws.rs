@@ -3,7 +3,8 @@
 //! Wire protocol is pinned by the plan: the exact JSON shapes below (field
 //! names, message `type` values) must not change without updating the spec.
 //!
-//! client→server: `prompt` / `approve_phase` / `advance` / `go_back` /
+//! client→server: `prompt` (optionally with staged `attachment_ids`) /
+//!                 `approve_phase` / `advance` / `go_back` /
 //!                 `cancel_stream` / `deny_phase_switch` / `set_engine`
 //! server→client: `snapshot` / `stream_delta` / `tool_call` / `question` /
 //!                 `phase_state` / `iteration_added` / `build_progress` /
@@ -176,7 +177,12 @@ fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> V
             let text = parsed.get("text").and_then(|t| t.as_str()).unwrap_or("");
             let part_refs = string_array(&parsed, "part_refs");
             let lib_refs = string_array(&parsed, "lib_refs");
-            core.submit_prompt(text, &part_refs, &lib_refs);
+            let attachment_ids = string_array(&parsed, "attachment_ids");
+            let images = match resolve_uploaded_images(project_id, &attachment_ids) {
+                Ok(images) => images,
+                Err(e) => return vec![error_msg(&e)],
+            };
+            core.submit_prompt_with_images(text, &part_refs, &lib_refs, &images);
             Vec::new()
         }
         Some("approve_phase") => {
@@ -234,6 +240,38 @@ fn handle_client_message(state: &SharedState, project_id: &str, text: &str) -> V
         }
         _ => vec![error_msg("unknown message type")],
     }
+}
+
+fn resolve_uploaded_images(project_id: &str, ids: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
+    const MAX_IMAGES_PER_PROMPT: usize = 5;
+    if ids.len() > MAX_IMAGES_PER_PROMPT {
+        return Err(format!("at most {MAX_IMAGES_PER_PROMPT} images can be attached"));
+    }
+    if !crate::server::routes::is_valid_project_name(project_id) {
+        return Err("invalid project id".to_string());
+    }
+
+    let dir = crate::storage::project::root_dir()
+        .join(project_id.trim())
+        .join(".attachments");
+    ids.iter()
+        .map(|id| {
+            if id.is_empty()
+                || id.starts_with('.')
+                || id.contains('/')
+                || id.contains('\\')
+                || id.contains("..")
+                || id.contains('\0')
+            {
+                return Err("invalid image attachment".to_string());
+            }
+            let path = dir.join(id);
+            if !path.is_file() || !crate::image::is_image(&path) {
+                return Err("image attachment was not found".to_string());
+            }
+            Ok(path)
+        })
+        .collect()
 }
 
 fn poll_core_events(state: &SharedState, project_id: &str) -> Vec<Value> {

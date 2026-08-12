@@ -3,8 +3,9 @@
 use crate::core::AppCore;
 use crate::server::SharedState;
 use crate::storage;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -20,6 +21,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/projects/{id}/export/{file}", get(get_export_file))
         .route("/api/projects/{id}/open-folder", post(open_folder))
         .route("/api/projects/{id}/baseline", post(set_baseline))
+        .route(
+            "/api/projects/{id}/attachments",
+            post(upload_attachment).layer(DefaultBodyLimit::max(MAX_ATTACHMENT_BYTES)),
+        )
         .route("/api/refs", get(list_refs))
         .route("/api/engines", get(list_engines))
         .with_state(state.clone())
@@ -136,6 +141,108 @@ async fn list_refs(State(_state): State<SharedState>) -> Response {
 #[derive(Debug, Deserialize)]
 struct CreateProjectRequest {
     name: String,
+}
+
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct UploadAttachmentQuery {
+    filename: String,
+}
+
+/// `POST /api/projects/{id}/attachments?filename=...` — stage one image for
+/// a later WebSocket prompt. The body is the file bytes; the returned id is
+/// opaque to the browser and resolves only inside this project's hidden
+/// attachment directory.
+async fn upload_attachment(
+    Path(id): Path<String>,
+    Query(query): Query<UploadAttachmentQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !is_valid_project_name(&id) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid project id");
+    }
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "image is empty");
+    }
+
+    let original = query.filename.trim();
+    if original.is_empty()
+        || original.starts_with('.')
+        || original.contains('/')
+        || original.contains('\\')
+        || original.contains("..")
+        || original.contains('\0')
+    {
+        return error_response(StatusCode::BAD_REQUEST, "invalid image filename");
+    }
+
+    let ext = match std::path::Path::new(original)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+    {
+        Some(ext) if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") => ext,
+        _ => return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported image type"),
+    };
+    let expected_mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => unreachable!(),
+    };
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(str::trim);
+    if content_type != Some(expected_mime) || !image_signature_matches(&body, &ext) {
+        return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "image content does not match its type");
+    }
+
+    let project_dir = storage::project::root_dir().join(id.trim());
+    if !project_dir.join("project.json").is_file() {
+        return error_response(StatusCode::NOT_FOUND, "project not found");
+    }
+    let dir = project_dir.join(".attachments");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(0);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = NEXT_ATTACHMENT.fetch_add(1, Ordering::Relaxed);
+    let safe_stem: String = std::path::Path::new(original)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .take(60)
+        .collect();
+    let safe_stem = if safe_stem.is_empty() { "image" } else { &safe_stem };
+    let attachment_id = format!("{nonce:x}-{counter:x}-{safe_stem}.{ext}");
+    if let Err(e) = std::fs::write(dir.join(&attachment_id), &body) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+
+    Json(json!({ "id": attachment_id, "name": original })).into_response()
+}
+
+fn image_signature_matches(bytes: &[u8], ext: &str) -> bool {
+    match ext {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" | "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
 }
 
 /// Validate a project name/id that will become a literal directory segment

@@ -450,13 +450,30 @@ impl AppCore {
     /// They are NOT part of the conversation-visible user message — the
     /// pushed/stored history always shows the user's raw text untagged.
     pub fn submit_prompt(&mut self, text: &str, part_refs: &[String], lib_refs: &[String]) {
+        self.submit_prompt_with_images(text, part_refs, lib_refs, &[]);
+    }
+
+    /// Submit a prompt with image files already staged by the web server.
+    /// The plain `submit_prompt` entry point remains for CLI/path-detected
+    /// attachments and existing callers.
+    pub fn submit_prompt_with_images(
+        &mut self,
+        text: &str,
+        part_refs: &[String],
+        lib_refs: &[String],
+        image_paths: &[PathBuf],
+    ) {
         for r in lib_refs {
             if !self.active_refs.contains(r) {
                 self.active_refs.push(r.clone());
             }
         }
 
-        let text = text.to_string();
+        let text = if text.trim().is_empty() && !image_paths.is_empty() {
+            "Use the attached image(s) as visual context.".to_string()
+        } else {
+            text.to_string()
+        };
 
         if self.claude.busy != BusyState::Idle {
             self.push_message("system", "Please wait for the current operation to finish.");
@@ -621,6 +638,14 @@ impl AppCore {
             let size_kb = std::fs::metadata(path).map(|m| m.len() / 1024).unwrap_or(0);
             self.push_message("system", &format!("Attached {kind} ({size_kb}KB): {}", path.display()));
         }
+        for path in image_paths {
+            let size_kb = std::fs::metadata(path).map(|m| m.len() / 1024).unwrap_or(0);
+            self.push_message(
+                "system",
+                &format!("Attached image ({size_kb}KB): {}", path.display()),
+            );
+        }
+        extracted_images.extend(image_paths.iter().cloned());
         extracted_images.extend(self.pending_images.drain(..));
         let all_images = extracted_images;
 
@@ -1685,6 +1710,25 @@ mod tests {
                 !log[0].prompt.contains("sketch.png"),
                 "the attachment path is stripped from the prompt text"
             );
+        });
+    }
+
+    #[test]
+    fn submit_prompt_with_images_dispatches_staged_web_uploads() {
+        with_test_home(|| {
+            let mut core = test_core(Some("User: Build me a bracket.".to_string()));
+            let img = core.session_dir().unwrap().join("uploaded.png");
+            std::fs::write(&img, b"not-really-a-png").unwrap();
+
+            core.submit_prompt_with_images("", &[], &[], std::slice::from_ref(&img));
+
+            let log = captured(&core);
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0].images, vec![img]);
+            assert!(log[0].prompt.contains("attached image"));
+            let messages = core.messages();
+            assert_eq!(messages.last().unwrap().0, "user");
+            assert_eq!(messages.last().unwrap().1, "Use the attached image(s) as visual context.");
         });
     }
 

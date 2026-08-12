@@ -225,7 +225,12 @@ End a line with `\` to continue on the next line:
 
 ### Image input
 
-Paste from clipboard with `Ctrl+V`, or reference a file path:
+Use the **Image** button in the chat composer, paste an image, or drag images
+onto the composer. A preview can be removed before sending, and an image can
+be sent without text when the visual context speaks for itself. PNG, JPEG,
+WebP, and GIF files are supported (up to five images, 10 MB each).
+
+Filesystem paths continue to work when submitting prompts outside the browser:
 
 ```
 > design a mount based on ~/photos/sketch.png

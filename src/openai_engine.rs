@@ -16,6 +16,7 @@
 use crate::claude_bridge::{BuildProgress, ToolCall};
 use crate::engine_config::EndpointConfig;
 use crate::mcp_client::{McpClient, ToolDef};
+use base64::Engine as _;
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -30,6 +31,8 @@ pub struct OpenAiTurn {
     /// (role, content) as persisted in session.json.
     pub history: Vec<(String, String)>,
     pub prompt: String,
+    /// Images included in the newest user message as base64 data URLs.
+    pub images: Vec<std::path::PathBuf>,
     pub session_dir: Option<std::path::PathBuf>,
     pub cancel: Arc<AtomicBool>,
 }
@@ -66,6 +69,20 @@ pub(crate) fn run_turn_with_client(
     progress_tx: &Sender<BuildProgress>,
     mut client: Option<McpClient>,
 ) -> Result<String, String> {
+    let mut messages = match build_messages_with_images(
+        &turn.system_prompt,
+        &turn.history,
+        &turn.prompt,
+        &turn.images,
+    ) {
+        Ok(messages) => messages,
+        Err(e) => {
+            if let Some(c) = client.take() {
+                c.shutdown();
+            }
+            return Err(e);
+        }
+    };
     let tool_defs: Vec<ToolDef> = match &mut client {
         Some(c) => c.list_tools().unwrap_or_else(|e| {
             eprintln!("Warning: MCP list_tools failed, continuing without tools: {e}");
@@ -75,7 +92,6 @@ pub(crate) fn run_turn_with_client(
     };
     let tools_json = tool_defs_to_openai(&tool_defs);
 
-    let mut messages = build_messages(&turn.system_prompt, &turn.history, &turn.prompt);
     let mut accumulated_text = String::new();
     let mut malformed_streak: u32 = 0;
 
@@ -290,6 +306,35 @@ pub(crate) fn build_messages(
     messages
 }
 
+fn build_messages_with_images(
+    system: &str,
+    history: &[(String, String)],
+    prompt: &str,
+    images: &[std::path::PathBuf],
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut messages = build_messages(system, history, prompt);
+    if images.is_empty() {
+        return Ok(messages);
+    }
+
+    let mut content = vec![serde_json::json!({"type": "text", "text": prompt})];
+    for path in images {
+        let mime = crate::image::image_mime_type(path)
+            .ok_or_else(|| format!("unsupported image type: {}", path.display()))?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("failed to read image {}: {e}", path.display()))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:{mime};base64,{encoded}") },
+        }));
+    }
+    if let Some(last) = messages.last_mut() {
+        last["content"] = serde_json::Value::Array(content);
+    }
+    Ok(messages)
+}
+
 /// Translate MCP tool defs into OpenAI `tools` function-calling schemas.
 /// Plain tool names — no `mcp__smidr__` prefix (that's a Claude-CLI artifact).
 pub(crate) fn tool_defs_to_openai(defs: &[ToolDef]) -> serde_json::Value {
@@ -454,6 +499,19 @@ mod tests {
         assert_eq!(msgs[1]["content"], "which color?");
         assert_eq!(msgs[2]["role"], "user");
         assert_eq!(msgs[2]["content"], "red");
+    }
+
+    #[test]
+    fn build_messages_embeds_images_in_the_newest_user_message() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let image = dir.path().join("context.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let msgs = build_messages_with_images("SYS", &[], "inspect this", &[image]).unwrap();
+        let content = msgs.last().unwrap()["content"].as_array().unwrap();
+        assert_eq!(content[0], serde_json::json!({"type": "text", "text": "inspect this"}));
+        let url = content[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
     }
 
     // ---- tool_defs_to_openai ----
@@ -655,6 +713,7 @@ mod tests {
             system_prompt: "system prompt".to_string(),
             history: vec![],
             prompt: "hello".to_string(),
+            images: vec![],
             session_dir: None,
             cancel: Arc::new(AtomicBool::new(false)),
         }

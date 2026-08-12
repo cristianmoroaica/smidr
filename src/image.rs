@@ -17,6 +17,29 @@ fn is_attachment_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `path` has an image extension understood by the attachment
+/// pipeline. This is public so the web upload boundary can reject arbitrary
+/// files before they are persisted.
+pub fn is_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// MIME type used by OpenAI-compatible multimodal requests.
+pub fn image_mime_type(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
+        _ => None,
+    }
+}
+
 /// Check if a path is a PDF.
 pub fn is_pdf(path: &Path) -> bool {
     path.extension()
