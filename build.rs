@@ -4,6 +4,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=frontend/dist");
+    println!("cargo:rerun-if-env-changed=SMIDR_BUILD_ID");
 
     if std::env::var("CARGO_FEATURE_EMBED_FRONTEND").is_ok() {
         let index = std::path::Path::new("frontend/dist/index.html");

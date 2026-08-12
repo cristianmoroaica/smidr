@@ -11,6 +11,15 @@
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
+/// Runtime contract used by the Electron shell. A desktop package refuses to
+/// open a backend that was built without the matching frontend.
+pub const FRONTEND_EMBEDDED: bool = cfg!(feature = "embed-frontend");
+
+pub const BUILD_ID: &str = match option_env!("SMIDR_BUILD_ID") {
+    Some(id) => id,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Minimal standalone page shown when the frontend has not been built /
 /// embedded (default build, no `embed-frontend` feature).
 pub const NOT_BUILT_HTML: &str = r#"<!doctype html>

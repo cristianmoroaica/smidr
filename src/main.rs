@@ -42,6 +42,41 @@ struct Cli {
     /// Don't open a browser window when starting the web server.
     #[arg(long)]
     no_browser: bool,
+
+    /// Parent process that owns this server. The desktop shell uses this to
+    /// ensure a crashed or force-closed shell cannot leave a stale backend.
+    #[arg(long, hide = true)]
+    parent_pid: Option<u32>,
+}
+
+/// Tie the backend lifetime to its desktop owner. Linux can ask the kernel to
+/// deliver SIGTERM if the parent disappears; other Unix targets use a small
+/// watchdog. Normal CLI/browser launches omit the flag and are unchanged.
+fn monitor_parent(parent_pid: Option<u32>) {
+    let Some(parent_pid) = parent_pid else { return };
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+            eprintln!("Startup warning: failed to bind backend lifetime to desktop parent");
+        }
+        if libc::getppid() as u32 != parent_pid {
+            std::process::exit(0);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let alive = unsafe { libc::kill(parent_pid as i32, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !alive {
+            std::process::exit(0);
+        }
+    });
+
+    #[cfg(not(unix))]
+    let _ = parent_pid;
 }
 
 /// Preview is now the in-browser three.js viewer, so there is no external
@@ -74,6 +109,7 @@ fn startup_checks(config: &Config) {
 fn main() {
     let cli = Cli::parse();
     let _ = cli.web; // deprecated no-op, accepted for backward compatibility
+    monitor_parent(cli.parent_pid);
 
     // Read piped stdin (briefing) before starting the server.
     let briefing: Option<String> = if !std::io::stdin().is_terminal() {

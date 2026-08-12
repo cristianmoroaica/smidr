@@ -1,0 +1,106 @@
+name: macOS desktop
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/macos-desktop.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'build.rs'
+      - 'desktop/**'
+      - 'frontend/**'
+      - 'mcp/**'
+      - 'prompts/**'
+      - 'python/**'
+      - 'src/**'
+      - 'tests/**'
+  push:
+    paths:
+      - '.github/workflows/macos-desktop.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'build.rs'
+      - 'desktop/**'
+      - 'frontend/**'
+      - 'mcp/**'
+      - 'prompts/**'
+      - 'python/**'
+      - 'src/**'
+      - 'tests/**'
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            arch: arm64
+          - name: Intel
+            runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      SMIDR_UNSIGNED_MAC_BUILD: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Prepare CadQuery runtime
+        run: |
+          python -m venv .venv-cadquery
+          .venv-cadquery/bin/python -m pip install --upgrade pip
+          .venv-cadquery/bin/python -m pip install -e ./python
+          .venv-cadquery/bin/python -m ai3d_cad --version
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix desktop
+
+      - name: Verify requested architecture
+        run: |
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
+          uname -m
+
+      - name: Test and package native macOS app
+        run: npm --prefix desktop run dist:mac:unsigned
+
+      - name: Verify packaged runtime again
+        run: |
+          app_path="$(find desktop/dist -type d -name 'Smiðr.app' -print -quit)"
+          test -n "$app_path"
+          resources="$app_path/Contents/Resources"
+          SMIDR_PACKAGED_RESOURCES="$resources" npm --prefix desktop run smoke:backend
+          file "$resources/bin/smidr"
+          test "$(node -p "require('./desktop/generated/runtime/manifest.json').arch")" = "${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smidr-macos-${{ matrix.arch }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+          if-no-files-found: error

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
+        .route("/api/health", get(health))
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{id}", axum::routing::delete(delete_project))
         .route("/api/projects/{id}/export", post(export_project))
@@ -30,6 +31,17 @@ pub fn router(state: SharedState) -> Router {
         // last via `.fallback` so it never shadows `/api/*` or the
         // `/api/session` WebSocket route above.
         .fallback(crate::server::assets::static_handler)
+}
+
+async fn health() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "build_id": crate::server::assets::BUILD_ID,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "frontend_embedded": crate::server::assets::FRONTEND_EMBEDDED,
+    }))
 }
 
 #[derive(Debug, Serialize)]

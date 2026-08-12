@@ -93,6 +93,7 @@ After every build, Claude:
 ## Requirements
 
 - **Rust** (1.70+)
+- **Node.js** (20.19+; required to build/package the desktop app)
 - **Python 3.11** with CadQuery (see [Python Setup](#python-setup))
 - **Claude CLI** (`claude`) — [Install Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **f3d** (required) — `pacman -S f3d` / `brew install f3d` — used for live preview and headless 360° scans
@@ -100,18 +101,11 @@ After every build, Claude:
 
 ## Installation
 
-### 1. Clone and build
+### 1. Clone
 
 ```bash
 git clone <repo-url> smidr
 cd smidr
-cargo build --release
-```
-
-The binary is at `target/release/smidr`. Copy it somewhere in your `$PATH`:
-
-```bash
-cp target/release/smidr ~/.local/bin/
 ```
 
 ### 2. Python setup
@@ -144,7 +138,47 @@ Smidr auto-detects the `.venv-cadquery` directory. You can also set the Python p
 export SMIDR_PYTHON=/path/to/python3.11
 ```
 
-### 3. Claude CLI
+### 3. Desktop app (recommended)
+
+The Electron package owns the local Rust backend and only opens the window
+after confirming that the backend contains the exact frontend build packaged
+with it. It also shuts the backend down with the app, so old ephemeral servers
+cannot accumulate across launches.
+
+```bash
+cd desktop
+npm install
+npm run install:linux
+```
+
+On macOS, use the native package/install flow instead:
+
+```bash
+cd desktop
+npm install
+npm run install:mac
+```
+
+This builds for the Mac's current architecture (Apple Silicon or Intel),
+installs `Smiðr.app` in `~/Applications`, and opens it. A distributable DMG and
+ZIP can be produced with `npm run dist:mac`; signed distribution additionally
+requires an Apple Developer ID certificate and notarization credentials.
+
+`install:linux` runs the complete production gate—frontend dependency install,
+Svelte checks, frontend build, Rust tests, embedded release build, a live runtime
+smoke test, AppImage packaging, and launcher installation. It installs the app
+as `smidr-desktop` and adds Smiðr to the Linux desktop application menu.
+
+For a headless verification of the exact prepared backend/frontend pair:
+
+```bash
+npm run smoke:backend
+```
+
+See [`desktop/README.md`](desktop/README.md) for development and packaging
+details.
+
+### 4. Claude CLI
 
 Make sure `claude` is installed and authenticated:
 
@@ -157,7 +191,7 @@ Smidr spawns `claude` with `--dangerously-skip-permissions` and `--strict-mcp-co
 ## Usage
 
 ```bash
-smidr
+smidr-desktop
 ```
 
 Create or select a project, then start describing your part:

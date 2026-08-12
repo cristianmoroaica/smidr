@@ -29,3 +29,9 @@ docs/superpowers/
 .DS_Store
 .worktrees/
 .playwright-mcp/
+
+# Electron desktop build output
+desktop/node_modules/
+desktop/generated/
+desktop/.generated-next-*/
+desktop/dist/

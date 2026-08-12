@@ -74,6 +74,7 @@ You have these tools available:
 - list_files: List files in the session directory
 - open_viewer: Open the model in the 3D viewer
 - import_step: Import an existing STEP file for analysis
+- delete_path: Delete stale files or directories in the session (e.g. superseded components or exports) so they can't be mis-printed
 - request_phase_change: Ask the user to switch phases when the work belongs in another phase (the user consents in the app; you cannot switch phases yourself)
 
 ## Workflow

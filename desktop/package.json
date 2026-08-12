@@ -1,0 +1,28 @@
+{
+  "name": "smidr-desktop",
+  "version": "0.3.0",
+  "private": true,
+  "author": "Cristian Moroaica",
+  "desktopName": "smidr-desktop.desktop",
+  "description": "Smiðr desktop application",
+  "main": "main.cjs",
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "prepare:production": "node scripts/prepare-production.mjs",
+    "start": "npm run prepare:production && npm run smoke:backend && electron .",
+    "start:prepared": "electron .",
+    "smoke:backend": "node scripts/smoke-backend.mjs",
+    "package:dir": "npm run prepare:production && npm run smoke:backend && electron-builder --config electron-builder.config.cjs --linux dir",
+    "dist:linux": "npm run prepare:production && npm run smoke:backend && electron-builder --config electron-builder.config.cjs --linux AppImage",
+    "install:linux": "npm run dist:linux && node scripts/install-linux.mjs",
+    "package:mac": "node scripts/build-macos.mjs dir",
+    "package:mac:unsigned": "SMIDR_UNSIGNED_MAC_BUILD=1 node scripts/build-macos.mjs dir",
+    "dist:mac": "node scripts/build-macos.mjs dist",
+    "dist:mac:unsigned": "SMIDR_UNSIGNED_MAC_BUILD=1 node scripts/build-macos.mjs dist",
+    "install:mac": "SMIDR_UNSIGNED_MAC_BUILD=1 node scripts/build-macos.mjs dir && node scripts/install-macos.mjs"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  }
+}

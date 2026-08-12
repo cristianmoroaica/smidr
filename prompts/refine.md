@@ -32,6 +32,7 @@ You have these tools available:
 - read_file: Read files from the session directory
 - list_files: List files in the session directory
 - open_viewer: Open the model in the 3D viewer
+- delete_path: Delete stale files or directories in the session (e.g. superseded components or exports)
 - request_phase_change: Ask the user to switch phases when the work belongs in another phase (the user consents in the app; you cannot switch phases yourself)
 
 Your workflow:

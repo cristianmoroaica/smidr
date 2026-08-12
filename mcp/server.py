@@ -8,6 +8,7 @@ directory (components/, assembly/, refinement/) auto-triggers a CadQuery build.
 import argparse
 import json
 import os
+import shutil
 import sys
 
 
@@ -228,6 +229,24 @@ SCREENSHOT_VIEWER_TOOL = {
     }
 }
 
+DELETE_PATH_TOOL = {
+    "name": "delete_path",
+    "description": (
+        "Delete a file or directory (recursively) inside the session directory. "
+        "Use this to remove stale components, superseded exports, or dead build code "
+        "so they can't be mis-printed. Spec artifacts (goal.md, spec_fields.json, "
+        "spec_narrative.md), session.json, the iteration history, and the viewer "
+        "buffer cannot be deleted."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Relative path within the session directory (file or directory)"}
+        },
+        "required": ["path"]
+    }
+}
+
 IMPORT_STEP_TOOL = {
     "name": "import_step",
     "description": (
@@ -353,6 +372,7 @@ BUILD_TOOLS = [
     LIST_FILES_TOOL,
     SCREENSHOT_VIEWER_TOOL,
     IMPORT_STEP_TOOL,
+    DELETE_PATH_TOOL,
     LIST_REFERENCES_TOOL,
     READ_REFERENCE_TOOL,
     FETCH_URL_TOOL,
@@ -399,6 +419,7 @@ REFINE_TOOLS = [
     LIST_FILES_TOOL,
     SCREENSHOT_VIEWER_TOOL,
     IMPORT_STEP_TOOL,
+    DELETE_PATH_TOOL,
     LIST_REFERENCES_TOOL,
     READ_REFERENCE_TOOL,
     FETCH_URL_TOOL,
@@ -1102,6 +1123,32 @@ def handle_tool_call(name, arguments, session_dir):
             else:
                 return [{"type": "text", "text": "No model built yet. Write code first."}]
         return [{"type": "text", "text": "No session directory — cannot open viewer."}]
+
+    if name == "delete_path":
+        rel_path = arguments.get("path", "")
+        if not session_dir:
+            return [{"type": "text", "text": "No session directory set."}]
+        root = os.path.realpath(session_dir)
+        full_path = os.path.realpath(os.path.join(session_dir, rel_path))
+        rel = os.path.relpath(full_path, root)
+        if rel == "." or rel.startswith(".."):
+            return [{"type": "text", "text": "Path must be a file or directory inside the session directory (cannot delete the session root)."}]
+        protected_names = {"goal.md", "spec_fields.json", "spec_narrative.md", "session.json"}
+        if os.path.basename(full_path) in protected_names:
+            return [{"type": "text", "text": f"Cannot delete {rel_path} — protected session artifact."}]
+        top = rel.split(os.sep)[0]
+        if top == "iterations" or top.startswith("_buffer"):
+            return [{"type": "text", "text": f"Cannot delete {rel_path} — iteration history and the viewer buffer are protected."}]
+        if not os.path.lexists(full_path):
+            return [{"type": "text", "text": f"Not found: {rel_path}"}]
+        try:
+            if os.path.isdir(full_path) and not os.path.islink(full_path):
+                shutil.rmtree(full_path)
+                return [{"type": "text", "text": f"Deleted directory: {rel}/"}]
+            os.remove(full_path)
+            return [{"type": "text", "text": f"Deleted file: {rel}"}]
+        except Exception as e:
+            return [{"type": "text", "text": f"Error deleting {rel_path}: {e}"}]
 
     if name == "write_file":
         rel_path = arguments.get("path", "")

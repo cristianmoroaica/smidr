@@ -513,6 +513,16 @@ pub fn generate_mcp_config(phase_name: &str, session_dir: Option<&Path>) -> Resu
 /// Locate the MCP server script (mcp/server.py).
 /// Searches cwd, binary dir, and walks up from cwd.
 pub(crate) fn find_mcp_server() -> Result<PathBuf, String> {
+    if let Some(configured) = std::env::var_os("SMIDR_MCP_SERVER") {
+        let configured = PathBuf::from(configured);
+        if configured.is_file() {
+            return Ok(configured);
+        }
+        return Err(format!(
+            "SMIDR_MCP_SERVER does not point to a file: {}",
+            configured.display()
+        ));
+    }
     let candidates = [
         std::env::current_dir().ok().map(|d| d.join("mcp/server.py")),
         std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mcp/server.py"))),
@@ -542,6 +552,11 @@ pub(crate) fn find_mcp_server() -> Result<PathBuf, String> {
 /// Looks for .venv-cadquery/bin/python3 relative to the project root
 /// (same directory tree as mcp/server.py). Falls back to "python3".
 pub(crate) fn find_cadquery_python(server_path: &Path) -> String {
+    if let Ok(configured) = std::env::var("SMIDR_PYTHON") {
+        if !configured.trim().is_empty() {
+            return configured;
+        }
+    }
     // server_path is like /path/to/project/mcp/server.py
     // project root is the parent of mcp/
     if let Some(project_root) = server_path.parent().and_then(|p| p.parent()) {
