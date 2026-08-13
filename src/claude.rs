@@ -53,6 +53,17 @@ pub fn parse_build_progress_line(line: &str) -> Option<(String, String)> {
     Some((component.to_string(), status.to_string()))
 }
 
+/// Keep the filesystem/shell/editing built-ins out of MCP-driven CAD turns,
+/// while retaining the browsing tools needed to verify real-world component
+/// specifications. Read is added only when an attachment must be inspected.
+fn restricted_builtin_tools(has_images: bool) -> &'static str {
+    if has_images {
+        "Read,WebSearch,WebFetch"
+    } else {
+        "WebSearch,WebFetch"
+    }
+}
+
 pub fn send_prompt(
     model: &Option<String>,
     system_prompt: &str,
@@ -100,12 +111,11 @@ pub fn send_prompt(
     }
 
     if disable_builtin_tools {
-        if image_paths.is_empty() {
-            cmd.arg("--tools").arg("");
-        } else {
-            // Keep Read tool available so Claude can view attached images
-            cmd.arg("--allowedTools").arg("Read");
-        }
+        let tools = restricted_builtin_tools(!image_paths.is_empty());
+        cmd.arg("--tools").arg(tools);
+        // These turns are non-interactive; explicitly pre-allow the same
+        // restricted set so a web lookup can never pause for confirmation.
+        cmd.arg("--allowedTools").arg(tools);
         cmd.arg("--strict-mcp-config");
         cmd.arg("--disallowedTools").arg("LSP");
     }
@@ -360,6 +370,15 @@ mod tests {
             bool,
             Option<&std::sync::mpsc::Sender<crate::claude_bridge::BuildProgress>>,
         ) -> Result<(String, Option<String>), String> = send_with_phase_prompt;
+    }
+
+    #[test]
+    fn restricted_turns_keep_web_tools_and_only_add_read_for_images() {
+        assert_eq!(restricted_builtin_tools(false), "WebSearch,WebFetch");
+        assert_eq!(
+            restricted_builtin_tools(true),
+            "Read,WebSearch,WebFetch"
+        );
     }
 
     #[test]

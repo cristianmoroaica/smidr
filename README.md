@@ -69,7 +69,7 @@ After every build, Claude:
 
 ## Safety Rails
 
-- **Never fabricates specs** — Claude will not invent dimensions for real-world components. If a motor, PCB, or connector isn't in the reference library, Claude asks the user to provide specs or use `/ref` to research it.
+- **Never fabricates specs** — Claude will not invent dimensions for real-world components. If a motor, PCB, or connector isn't in the reference library, Claude searches authoritative manufacturer sources first, then asks the user when the needed dimension cannot be verified.
 - **Phase-gated tools** — Each phase exposes only relevant tools; Claude can't skip steps
 - **No auto-advance** — Phase transitions require explicit user command (`advance` / `approve`)
 - **Topology regression detection** — Refinement checks that features aren't lost between builds
