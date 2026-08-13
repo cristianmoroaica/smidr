@@ -17,6 +17,7 @@ module.exports = {
   },
   files: [
     'main.cjs',
+    'preload.cjs',
     'lib/**/*',
     'package.json'
   ],

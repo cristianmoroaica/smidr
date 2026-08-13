@@ -60,6 +60,17 @@
     exporting = true;
     exportError = null;
     try {
+      if (window.smidrDesktop) {
+        const result = await window.smidrDesktop.exportProject(projectId);
+        if (!result.canceled) {
+          exportResult = {
+            dir: result.dir,
+            files: result.files.map((name) => ({ name, url: '' }))
+          };
+        }
+        return;
+      }
+
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/export`, {
         method: 'POST'
       });
@@ -86,6 +97,10 @@
     openingFolder = true;
     openFolderError = null;
     try {
+      if (window.smidrDesktop) {
+        await window.smidrDesktop.openExportFolder();
+        return;
+      }
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/open-folder`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -140,7 +155,7 @@
     <div class="cards">
       <button type="button" class="option-card" onclick={doExport} disabled={exporting}>
         <span class="option-title">{exporting ? 'Exporting…' : 'Export build'}</span>
-        <span class="option-desc">Download the current iteration as STL and STEP.</span>
+        <span class="option-desc">Save the current iteration as STL and STEP.</span>
       </button>
 
       {#if exportError}

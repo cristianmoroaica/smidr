@@ -4,7 +4,8 @@ const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
-const { app, BrowserWindow, dialog, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { requestJson, saveExportBatch, validateExportFiles } = require('./lib/export-batch.cjs');
 const {
   lineToBackendUrl,
   readRuntime,
@@ -18,6 +19,7 @@ let backendUrl = null;
 let mainWindow = null;
 let quitting = false;
 let startupFailure = null;
+let lastExportDirectory = null;
 
 app.setName('Smiðr');
 
@@ -235,7 +237,8 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs')
     }
   });
 
@@ -256,6 +259,53 @@ async function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(backendUrl);
 }
+
+ipcMain.handle('smidr:export-project', async (_event, projectId) => {
+  if (!backendUrl || typeof projectId !== 'string' || !projectId.trim()) {
+    throw new Error('No project is ready to export.');
+  }
+
+  const choice = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose export folder',
+    defaultPath: app.getPath('downloads'),
+    buttonLabel: 'Export here',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (choice.canceled || choice.filePaths.length === 0) return { canceled: true };
+
+  const targetDir = choice.filePaths[0];
+  const exportUrl = new URL(`/api/projects/${encodeURIComponent(projectId)}/export`, backendUrl);
+  const data = await requestJson(exportUrl, { method: 'POST' });
+  const validatedFiles = validateExportFiles(backendUrl, data.files);
+  const conflicts = validatedFiles
+    .map((file) => file.name)
+    .filter((name) => fs.existsSync(path.join(targetDir, name)));
+
+  if (conflicts.length > 0) {
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'Replace existing export files?',
+      message: `${conflicts.length} export ${conflicts.length === 1 ? 'file already exists' : 'files already exist'} in this folder.`,
+      detail: 'Replace the existing files with this export?',
+      buttons: ['Replace', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+    if (confirmation.response !== 0) return { canceled: true };
+  }
+
+  const files = await saveExportBatch({ backendUrl, targetDir, files: data.files });
+  lastExportDirectory = targetDir;
+  return { canceled: false, dir: targetDir, files };
+});
+
+ipcMain.handle('smidr:open-export-folder', async () => {
+  if (!lastExportDirectory) throw new Error('No export folder is available yet.');
+  const error = await shell.openPath(lastExportDirectory);
+  if (error) throw new Error(error);
+  return { path: lastExportDirectory };
+});
 
 app.whenReady().then(async () => {
   try {

@@ -90,6 +90,7 @@ const sourceHash = hashFiles([
   'desktop/electron-builder.config.cjs',
   'desktop/lib',
   'desktop/main.cjs',
+  'desktop/preload.cjs',
   'desktop/package.json',
   'frontend/dist',
   'mcp/server.py',
